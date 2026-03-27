@@ -1,77 +1,134 @@
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 import os
 import asyncio
 import threading
+import requests
+import json
 
 app = FastAPI()
 
-# ==================== TELEGRAM БОТ ====================
+# ==================== КОНФИГУРАЦИЯ ====================
 
-TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"  # ВСТАВЬТЕ СЮДА
+TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"  # ВСТАВЬТЕ СЮДА!
 
-# Простой Telegram бот
-class SimpleTelegramBot:
-    def __init__(self, token):
-        self.token = token
-        self.running = False
-    
-    async def send_message(self, chat_id, text):
-        import aiohttp
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-    
-    async def handle_update(self, update):
-        if "message" in update:
-            chat_id = update["message"]["chat"]["id"]
-            text = update["message"].get("text", "")
-            
-            if text == "/start":
-                await self.send_message(chat_id, "🤖 *SMC Crypto Bot*\n\nБот работает! Команды:\n/signals - сигналы\n/help - помощь")
-            elif text == "/help":
-                await self.send_message(chat_id, "📋 *Команды:*\n/start - запуск\n/signals - сигналы\n/status - статус")
-            elif text == "/status":
-                await self.send_message(chat_id, "✅ Бот активен\nВерсия: 1.0")
-            else:
-                await self.send_message(chat_id, f"⚠️ Неизвестная команда: {text}\nИспользуйте /help")
-    
-    async def run(self):
-        import aiohttp
-        self.running = True
-        offset = 0
+# ==================== ФУНКЦИИ TELEGRAM ====================
+
+def send_telegram_message(chat_id, text):
+    """Отправляет сообщение в Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        }
+        response = requests.post(url, json=payload, timeout=5)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending message: {e}")
+        return None
+
+def set_webhook():
+    """Устанавливает webhook для бота"""
+    try:
+        # Получаем URL из Railway
+        railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        if not railway_url:
+            # Пробуем получить из переменных
+            railway_url = "https://crypto-smc-bot.railway.app"
         
-        while self.running:
-            try:
-                url = f"https://api.telegram.org/bot{self.token}/getUpdates"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params={"offset": offset, "timeout": 30}) as resp:
-                        data = await resp.json()
-                        
-                        if data.get("ok"):
-                            for update in data.get("result", []):
-                                await self.handle_update(update)
-                                offset = update["update_id"] + 1
-            except Exception as e:
-                print(f"Telegram error: {e}")
-            
-            await asyncio.sleep(1)
+        webhook_url = f"{railway_url}/webhook"
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        response = requests.post(url, json={"url": webhook_url})
+        result = response.json()
+        
+        if result.get("ok"):
+            print(f"✅ Webhook установлен: {webhook_url}")
+        else:
+            print(f"❌ Ошибка webhook: {result}")
+        
+        return result
+    except Exception as e:
+        print(f"Error setting webhook: {e}")
+        return None
+
+# ==================== ОБРАБОТЧИКИ TELEGRAM ====================
+
+def handle_message(chat_id, text):
+    """Обрабатывает сообщения от пользователя"""
+    print(f"Получено сообщение от {chat_id}: {text}")
     
-    def start(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.run())
+    if text == "/start":
+        send_telegram_message(chat_id, """
+🤖 *SMC Crypto Bot*
 
-# Запускаем Telegram бота, если есть токен
-if TELEGRAM_TOKEN and TELEGRAM_TOKEN != "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU":
-    telegram_bot = SimpleTelegramBot(TELEGRAM_TOKEN)
-    thread = threading.Thread(target=telegram_bot.start, daemon=True)
-    thread.start()
-    print("✅ Telegram бот запущен")
-else:
-    print("⚠️ Telegram токен не настроен")
+✅ Бот работает!
 
-# ==================== ВЕБ-ИНТЕРФЕЙС ====================
+*Команды:*
+/signals - активные сигналы
+/status - статус бота
+/help - помощь
+""")
+    
+    elif text == "/help":
+        send_telegram_message(chat_id, """
+📋 *Помощь*
+
+/start - запуск бота
+/status - статус
+/signals - сигналы
+/help - эта справка
+""")
+    
+    elif text == "/status":
+        send_telegram_message(chat_id, """
+✅ *Статус*
+Бот: активен
+Версия: 1.0
+Мониторинг: BTC, ETH, SOL
+""")
+    
+    elif text == "/signals":
+        # Простой сигнал для теста
+        send_telegram_message(chat_id, """
+🚨 *ТЕСТОВЫЙ СИГНАЛ*
+
+📈 *BTC/USDT* | LONG
+🎯 Уверенность: 75%
+💰 Вход: $65,432
+🛑 SL: $64,450
+🎯 TP: $68,049
+""")
+    
+    else:
+        send_telegram_message(chat_id, f"⚠️ Неизвестная команда: {text}\nИспользуйте /help")
+
+# ==================== WEBHOOK ЭНДПОИНТ ====================
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Принимает обновления от Telegram"""
+    try:
+        update = await request.json()
+        print(f"Webhook received: {update}")
+        
+        # Обрабатываем сообщение
+        if "message" in update:
+            message = update["message"]
+            chat_id = message["chat"]["id"]
+            text = message.get("text", "")
+            
+            # Обрабатываем в отдельном потоке, чтобы не блокировать
+            threading.Thread(target=handle_message, args=(chat_id, text)).start()
+        
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+# ==================== WEB-ИНТЕРФЕЙС ====================
 
 @app.get("/")
 async def root():
@@ -111,17 +168,6 @@ async def root():
                 font-size: 24px;
                 margin: 20px 0;
             }
-            .commands {
-                text-align: left;
-                background: #0f0f1a;
-                padding: 15px;
-                border-radius: 10px;
-                margin-top: 20px;
-                font-size: 12px;
-            }
-            .commands code {
-                color: #00ff88;
-            }
             .telegram-link {
                 display: inline-block;
                 background: #00ff88;
@@ -131,6 +177,14 @@ async def root():
                 text-decoration: none;
                 margin-top: 20px;
                 font-weight: bold;
+            }
+            .commands {
+                text-align: left;
+                background: #0f0f1a;
+                padding: 15px;
+                border-radius: 10px;
+                margin-top: 20px;
+                font-size: 12px;
             }
         </style>
     </head>
@@ -142,7 +196,6 @@ async def root():
                 📋 <strong>Команды Telegram:</strong><br>
                 <code>/start</code> - запуск бота<br>
                 <code>/signals</code> - активные сигналы<br>
-                <code>/chart BTC</code> - график<br>
                 <code>/status</code> - статус<br>
                 <code>/help</code> - помощь
             </div>
@@ -153,4 +206,21 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "telegram": bool(TELEGRAM_TOKEN and TELEGRAM_TOKEN != "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU")}
+    return {"status": "ok", "telegram_token": bool(TELEGRAM_TOKEN and TELEGRAM_TOKEN != "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU")}
+
+@app.get("/setwebhook")
+async def set_webhook_endpoint():
+    """Ручная установка webhook"""
+    result = set_webhook()
+    return result
+
+# ==================== ЗАПУСК ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+# При старте устанавливаем webhook
+if TELEGRAM_TOKEN and TELEGRAM_TOKEN != "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU":
+    set_webhook()
