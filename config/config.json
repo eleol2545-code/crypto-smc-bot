@@ -1,0 +1,27 @@
+{
+  "exchanges": {
+    "binance": {
+      "api_key": "",
+      "api_secret": "",
+      "testnet": true
+    }
+  },
+  "trading": {
+    "enabled": false,
+    "max_positions": 3,
+    "risk_per_trade": 1.0,
+    "max_daily_loss": 5.0
+  },
+  "strategy": {
+    "style": "day",
+    "min_confidence": 70,
+    "timeframes": ["15m", "1h", "4h"],
+    "stop_loss_pct": 1.5,
+    "take_profit_pct": 3.0
+  },
+  "watchlist": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  }
+}
