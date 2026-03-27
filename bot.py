@@ -6,10 +6,9 @@ import pandas as pd
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
-# ИСПОЛЬЗУЕМ BYBIT (работает в России)
-exchange = ccxt.bybit({
+# ИСПОЛЬЗУЕМ KUCOIN (работает стабильно)
+exchange = ccxt.kucoin({
     'enableRateLimit': True,
-    'options': {'defaultType': 'linear'}  # USDT perpetual
 })
 
 def send_message(chat_id, text):
@@ -20,8 +19,8 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Send error: {e}")
 
-def get_signal(symbol='BTCUSDT'):
-    """Получает сигнал по паре (Bybit использует BTCUSDT без /)"""
+def get_signal(symbol='BTC/USDT'):
+    """Получает сигнал по паре (KuCoin использует BTC/USDT с /)"""
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=50)
         df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
@@ -37,7 +36,7 @@ def get_signal(symbol='BTCUSDT'):
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs)).iloc[-1]
         
-        symbol_name = symbol.replace('USDT', '')
+        symbol_name = symbol.replace('/USDT', '')
         
         if price <= low_20 * 1.005 and rsi < 40:
             return {
@@ -48,7 +47,9 @@ def get_signal(symbol='BTCUSDT'):
                 'entry': price,
                 'sl': price * 0.985,
                 'tp': price * 1.04,
-                'confidence': 75
+                'confidence': 75,
+                'support': low_20,
+                'resistance': high_20
             }
         elif price >= high_20 * 0.995 and rsi > 60:
             return {
@@ -59,7 +60,9 @@ def get_signal(symbol='BTCUSDT'):
                 'entry': price,
                 'sl': price * 1.015,
                 'tp': price * 0.96,
-                'confidence': 75
+                'confidence': 75,
+                'support': low_20,
+                'resistance': high_20
             }
         else:
             return {
@@ -81,6 +84,8 @@ def format_signal(signal):
     
     if signal.get('signal'):
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
+        rr = round((signal['tp'] - signal['entry']) / (signal['entry'] - signal['sl']), 1) if signal['signal'] == 'LONG' else round((signal['entry'] - signal['tp']) / (signal['sl'] - signal['entry']), 1)
+        
         return f"""{emoji} *{signal['signal']} СИГНАЛ* | {signal['symbol']}
 
 💰 Цена: ${signal['price']:.2f}
@@ -89,7 +94,8 @@ def format_signal(signal):
 
 🚪 Вход: ${signal['entry']:.2f}
 🛑 SL: ${signal['sl']:.2f}
-🎯 TP: ${signal['tp']:.2f}"""
+🎯 TP: ${signal['tp']:.2f}
+📊 R:R: 1:{rr}"""
     else:
         return f"""⏳ *НЕТ СИГНАЛА* | {signal['symbol']}
 
@@ -105,7 +111,7 @@ def handle_message(chat_id, text):
     if text == "/start":
         send_message(chat_id, """🤖 *SMC Crypto Bot*
 
-✅ Бот работает на Bybit (доступен в России)
+✅ Бот работает на KuCoin
 
 *Команды:*
 /signals - сигналы BTC, ETH, SOL
@@ -114,9 +120,11 @@ def handle_message(chat_id, text):
 /help - помощь""")
     
     elif text == "/signals":
-        btc = get_signal('BTCUSDT')
-        eth = get_signal('ETHUSDT')
-        sol = get_signal('SOLUSDT')
+        send_message(chat_id, "🔍 *Поиск сигналов...*")
+        
+        btc = get_signal('BTC/USDT')
+        eth = get_signal('ETH/USDT')
+        sol = get_signal('SOL/USDT')
         
         msg = "🚨 *АКТИВНЫЕ СИГНАЛЫ*\n\n"
         msg += format_signal(btc) + "\n\n"
@@ -126,11 +134,12 @@ def handle_message(chat_id, text):
         send_message(chat_id, msg)
     
     elif text == "/btc":
-        btc = get_signal('BTCUSDT')
+        send_message(chat_id, "🔍 *Анализ BTC...*")
+        btc = get_signal('BTC/USDT')
         send_message(chat_id, format_signal(btc))
     
     elif text == "/status":
-        btc = get_signal('BTCUSDT')
+        btc = get_signal('BTC/USDT')
         if btc:
             send_message(chat_id, f"""✅ *Статус*
 
@@ -140,9 +149,10 @@ RSI: {btc['rsi']:.1f}
 Сопротивление: ${btc['resistance']:.2f}
 
 Бот: активен
-Биржа: Bybit""")
+Биржа: KuCoin
+Версия: 2.0""")
         else:
-            send_message(chat_id, "✅ Бот активен\nБиржа: Bybit")
+            send_message(chat_id, "✅ Бот активен\nБиржа: KuCoin")
     
     elif text == "/help":
         send_message(chat_id, """📋 *Команды:*
@@ -157,7 +167,7 @@ RSI: {btc['rsi']:.1f}
 
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
-print("🚀 SMC Crypto Bot запущен (Bybit)")
+print("🚀 SMC Crypto Bot запущен (KuCoin)")
 print("Ожидание сообщений...")
 
 while True:
