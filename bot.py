@@ -6,21 +6,24 @@ import pandas as pd
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
-exchange = ccxt.binance({'enableRateLimit': True})
+# ИСПОЛЬЗУЕМ BYBIT (работает в России)
+exchange = ccxt.bybit({
+    'enableRateLimit': True,
+    'options': {'defaultType': 'linear'}  # USDT perpetual
+})
 
 def send_message(chat_id, text):
-    """Отправляет сообщение"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=5)
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
         print(f"Sent to {chat_id}")
     except Exception as e:
         print(f"Send error: {e}")
 
-def get_btc_signal():
-    """Получает сигнал по BTC"""
+def get_signal(symbol='BTCUSDT'):
+    """Получает сигнал по паре (Bybit использует BTCUSDT без /)"""
     try:
-        ohlcv = exchange.fetch_ohlcv('BTC/USDT', '1h', limit=50)
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=50)
         df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         
         price = df['c'].iloc[-1]
@@ -34,78 +37,66 @@ def get_btc_signal():
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs)).iloc[-1]
         
+        symbol_name = symbol.replace('USDT', '')
+        
         if price <= low_20 * 1.005 and rsi < 40:
-            return f"""📈 *LONG СИГНАЛ* | BTC
-
-💰 Цена: ${price:.2f}
-🎯 Уверенность: 75%
-📊 RSI: {rsi:.1f}
-
-🚪 Вход: ${price:.2f}
-🛑 SL: ${price * 0.985:.2f}
-🎯 TP: ${price * 1.04:.2f}
-
-📈 R:R: 1:2.7"""
-        
+            return {
+                'signal': 'LONG',
+                'symbol': symbol_name,
+                'price': price,
+                'rsi': rsi,
+                'entry': price,
+                'sl': price * 0.985,
+                'tp': price * 1.04,
+                'confidence': 75
+            }
         elif price >= high_20 * 0.995 and rsi > 60:
-            return f"""📉 *SHORT СИГНАЛ* | BTC
-
-💰 Цена: ${price:.2f}
-🎯 Уверенность: 75%
-📊 RSI: {rsi:.1f}
-
-🚪 Вход: ${price:.2f}
-🛑 SL: ${price * 1.015:.2f}
-🎯 TP: ${price * 0.96:.2f}
-
-📈 R:R: 1:2.7"""
-        
+            return {
+                'signal': 'SHORT',
+                'symbol': symbol_name,
+                'price': price,
+                'rsi': rsi,
+                'entry': price,
+                'sl': price * 1.015,
+                'tp': price * 0.96,
+                'confidence': 75
+            }
         else:
-            return f"""⏳ *НЕТ СИГНАЛА* | BTC
-
-💰 Цена: ${price:.2f}
-📊 RSI: {rsi:.1f}
-🟢 Поддержка: ${low_20:.2f}
-🔴 Сопротивление: ${high_20:.2f}"""
-            
+            return {
+                'signal': None,
+                'symbol': symbol_name,
+                'price': price,
+                'rsi': rsi,
+                'support': low_20,
+                'resistance': high_20
+            }
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        print(f"Error for {symbol}: {e}")
+        return None
 
-def get_eth_signal():
-    """Сигнал по ETH"""
-    try:
-        ohlcv = exchange.fetch_ohlcv('ETH/USDT', '1h', limit=50)
-        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        price = df['c'].iloc[-1]
-        high_20 = df['h'].iloc[-20:].max()
-        low_20 = df['l'].iloc[-20:].min()
-        
-        if price <= low_20 * 1.005:
-            return f"📈 *LONG* ETH | ${price:.2f}\n🎯 TP: ${price*1.04:.2f}"
-        elif price >= high_20 * 0.995:
-            return f"📉 *SHORT* ETH | ${price:.2f}\n🎯 TP: ${price*0.96:.2f}"
-        else:
-            return f"⏳ ETH | ${price:.2f}"
-    except:
-        return "❌ ETH ошибка"
+def format_signal(signal):
+    """Форматирует сигнал для отправки"""
+    if not signal:
+        return "❌ Ошибка получения данных"
+    
+    if signal.get('signal'):
+        emoji = "📈" if signal['signal'] == 'LONG' else "📉"
+        return f"""{emoji} *{signal['signal']} СИГНАЛ* | {signal['symbol']}
 
-def get_sol_signal():
-    """Сигнал по SOL"""
-    try:
-        ohlcv = exchange.fetch_ohlcv('SOL/USDT', '1h', limit=50)
-        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        price = df['c'].iloc[-1]
-        high_20 = df['h'].iloc[-20:].max()
-        low_20 = df['l'].iloc[-20:].min()
-        
-        if price <= low_20 * 1.005:
-            return f"📈 *LONG* SOL | ${price:.2f}"
-        elif price >= high_20 * 0.995:
-            return f"📉 *SHORT* SOL | ${price:.2f}"
-        else:
-            return f"⏳ SOL | ${price:.2f}"
-    except:
-        return "❌ SOL ошибка"
+💰 Цена: ${signal['price']:.2f}
+🎯 Уверенность: {signal['confidence']}%
+📊 RSI: {signal['rsi']:.1f}
+
+🚪 Вход: ${signal['entry']:.2f}
+🛑 SL: ${signal['sl']:.2f}
+🎯 TP: ${signal['tp']:.2f}"""
+    else:
+        return f"""⏳ *НЕТ СИГНАЛА* | {signal['symbol']}
+
+💰 Цена: ${signal['price']:.2f}
+📊 RSI: {signal['rsi']:.1f}
+🟢 Поддержка: ${signal['support']:.2f}
+🔴 Сопротивление: ${signal['resistance']:.2f}"""
 
 def handle_message(chat_id, text):
     """Обработка команд"""
@@ -114,7 +105,7 @@ def handle_message(chat_id, text):
     if text == "/start":
         send_message(chat_id, """🤖 *SMC Crypto Bot*
 
-✅ Бот работает!
+✅ Бот работает на Bybit (доступен в России)
 
 *Команды:*
 /signals - сигналы BTC, ETH, SOL
@@ -123,28 +114,50 @@ def handle_message(chat_id, text):
 /help - помощь""")
     
     elif text == "/signals":
-        btc = get_btc_signal()
-        eth = get_eth_signal()
-        sol = get_sol_signal()
+        btc = get_signal('BTCUSDT')
+        eth = get_signal('ETHUSDT')
+        sol = get_signal('SOLUSDT')
         
-        msg = f"🚨 *АКТИВНЫЕ СИГНАЛЫ*\n\n{btc}\n\n{eth}\n\n{sol}"
+        msg = "🚨 *АКТИВНЫЕ СИГНАЛЫ*\n\n"
+        msg += format_signal(btc) + "\n\n"
+        msg += format_signal(eth) + "\n\n"
+        msg += format_signal(sol)
+        
         send_message(chat_id, msg)
     
     elif text == "/btc":
-        send_message(chat_id, get_btc_signal())
+        btc = get_signal('BTCUSDT')
+        send_message(chat_id, format_signal(btc))
     
     elif text == "/status":
-        send_message(chat_id, "✅ *Статус*\nБот: активен\nВерсия: 1.0\nМониторинг: BTC, ETH, SOL")
+        btc = get_signal('BTCUSDT')
+        if btc:
+            send_message(chat_id, f"""✅ *Статус*
+
+BTC: ${btc['price']:.2f}
+RSI: {btc['rsi']:.1f}
+Поддержка: ${btc['support']:.2f}
+Сопротивление: ${btc['resistance']:.2f}
+
+Бот: активен
+Биржа: Bybit""")
+        else:
+            send_message(chat_id, "✅ Бот активен\nБиржа: Bybit")
     
     elif text == "/help":
-        send_message(chat_id, "📋 *Команды:*\n/start - запуск\n/signals - все сигналы\n/btc - BTC\n/status - статус\n/help - помощь")
+        send_message(chat_id, """📋 *Команды:*
+/start - запуск
+/signals - все сигналы
+/btc - только BTC
+/status - статус
+/help - помощь""")
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
-print("🚀 SMC Crypto Bot запущен (polling mode)")
+print("🚀 SMC Crypto Bot запущен (Bybit)")
 print("Ожидание сообщений...")
 
 while True:
