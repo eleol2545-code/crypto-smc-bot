@@ -3,17 +3,43 @@ import time
 import ccxt
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import json
+import os
 
-TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
+TELEGRAM_TOKEN = "7424012414:AAH_5-GVsX8-JMEXyN9w1VYIcK_1PInxiOI"
 LAST_UPDATE_ID = 0
 
-# Используем KuCoin (стабильно работает)
-exchange = ccxt.kucoin({
-    'enableRateLimit': True,
-})
+# Папка для хранения данных пользователей
+os.makedirs('data', exist_ok=True)
 
-# ==================== SMC АНАЛИЗАТОР ====================
+exchange = ccxt.kucoin({'enableRateLimit': True})
+
+# ==================== ХРАНИЛИЩЕ ПОЛЬЗОВАТЕЛЕЙ ====================
+
+def get_user_data(chat_id):
+    """Получает данные пользователя, создает если нет"""
+    file_path = f'data/user_{chat_id}.json'
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    else:
+        # Новый пользователь с настройками по умолчанию
+        user_data = {
+            'watchlist': ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'],
+            'style': 'day',
+            'timeframe': '1h',
+            'min_confidence': 70
+        }
+        with open(file_path, 'w') as f:
+            json.dump(user_data, f)
+        return user_data
+
+def save_user_data(chat_id, data):
+    """Сохраняет данные пользователя"""
+    with open(f'data/user_{chat_id}.json', 'w') as f:
+        json.dump(data, f)
+
+# ==================== SMC АНАЛИЗАТОР (полный) ====================
 
 def calculate_indicators(df):
     """Рассчитывает все индикаторы"""
@@ -66,7 +92,6 @@ def find_order_blocks(df):
     df['ob_low'] = np.nan
     
     for i in range(5, len(df) - 1):
-        # Бычий Order Block
         if (df['close'].iloc[i] > df['close'].iloc[i-1] * 1.01 and
             df['volume'].iloc[i] > df['volume'].iloc[i-5:i].mean() * 1.5):
             ob_high = df['high'].iloc[i-1]
@@ -77,7 +102,6 @@ def find_order_blocks(df):
                     df.loc[df.index[j], 'ob_high'] = ob_high
                     df.loc[df.index[j], 'ob_low'] = ob_low
         
-        # Медвежий Order Block
         elif (df['close'].iloc[i] < df['close'].iloc[i-1] * 0.99 and
               df['volume'].iloc[i] > df['volume'].iloc[i-5:i].mean() * 1.5):
             ob_high = df['high'].iloc[i-1]
@@ -90,30 +114,12 @@ def find_order_blocks(df):
     
     return df
 
-def find_fair_value_gaps(df):
-    """Находит Fair Value Gaps"""
-    df['bullish_fvg'] = 0
-    df['bearish_fvg'] = 0
-    
-    for i in range(2, len(df) - 1):
-        if df['low'].iloc[i] > df['high'].iloc[i-2]:
-            for j in range(i, min(i + 10, len(df))):
-                if df['low'].iloc[j] <= df['low'].iloc[i]:
-                    df.loc[df.index[j], 'bullish_fvg'] = 1
-        
-        elif df['high'].iloc[i] < df['low'].iloc[i-2]:
-            for j in range(i, min(i + 10, len(df))):
-                if df['high'].iloc[j] >= df['high'].iloc[i]:
-                    df.loc[df.index[j], 'bearish_fvg'] = 1
-    
-    return df
-
 def calculate_volume_profile(df, bars=50):
     """Volume Profile с POC"""
     recent = df.tail(bars)
     price_min = recent['low'].min()
     price_max = recent['high'].max()
-    step = (price_max - price_min) / 20
+    step = (price_max - price_min) / 20 if price_max > price_min else 1
     
     levels = []
     current = price_min
@@ -128,7 +134,7 @@ def calculate_volume_profile(df, bars=50):
     poc = max(levels, key=lambda x: x['volume']) if levels else None
     return poc['price'] if poc else None
 
-def generate_signal(df, style='day'):
+def generate_signal(df, style='day', min_confidence=70):
     """Генерирует сигнал с системой баллов"""
     if df is None or len(df) < 50:
         return None
@@ -146,7 +152,7 @@ def generate_signal(df, style='day'):
     signal_type = None
     reasons = []
     
-    # 1. Order Blocks (20 баллов)
+    # Order Blocks
     if current['bullish_ob'] == 1:
         score += 20
         signal_type = 'LONG'
@@ -156,92 +162,70 @@ def generate_signal(df, style='day'):
         signal_type = 'SHORT'
         reasons.append(f"🔴 Медвежий OB: ${current['ob_low']:.0f}-${current['ob_high']:.0f}")
     
-    # 2. FVG (15 баллов)
-    if current['bullish_fvg'] == 1:
-        score += 15
-        if not signal_type:
-            signal_type = 'LONG'
-        reasons.append("💚 Бычий FVG")
-    if current['bearish_fvg'] == 1:
-        score += 15
-        if not signal_type:
-            signal_type = 'SHORT'
-        reasons.append("❤️ Медвежий FVG")
-    
-    # 3. RSI (15 баллов)
+    # RSI
     if current['rsi'] < 30:
         score += 15
-        if not signal_type:
-            signal_type = 'LONG'
+        if not signal_type: signal_type = 'LONG'
         reasons.append(f"📊 RSI: {current['rsi']:.1f} (перепроданность)")
     elif current['rsi'] > 70:
         score += 15
-        if not signal_type:
-            signal_type = 'SHORT'
+        if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 RSI: {current['rsi']:.1f} (перекупленность)")
     
-    # 4. MACD (15 баллов)
-    if current['macd_hist'] > 0:
-        if signal_type == 'LONG':
-            score += 15
-            reasons.append(f"📈 MACD: +{current['macd_hist']:.2f}")
-    elif current['macd_hist'] < 0:
-        if signal_type == 'SHORT':
-            score += 15
-            reasons.append(f"📉 MACD: {current['macd_hist']:.2f}")
+    # MACD
+    if current['macd_hist'] > 0 and signal_type == 'LONG':
+        score += 15
+        reasons.append(f"📈 MACD: +{current['macd_hist']:.2f}")
+    elif current['macd_hist'] < 0 and signal_type == 'SHORT':
+        score += 15
+        reasons.append(f"📉 MACD: {current['macd_hist']:.2f}")
     
-    # 5. Bollinger Bands (15 баллов)
+    # Bollinger
     if current['close'] <= current['bb_lower'] * 1.005:
         score += 15
-        if not signal_type:
-            signal_type = 'LONG'
-        reasons.append(f"📊 Bollinger: у нижней полосы ${current['bb_lower']:.0f}")
+        if not signal_type: signal_type = 'LONG'
+        reasons.append(f"📊 Bollinger: у нижней полосы")
     elif current['close'] >= current['bb_upper'] * 0.995:
         score += 15
-        if not signal_type:
-            signal_type = 'SHORT'
-        reasons.append(f"📊 Bollinger: у верхней полосы ${current['bb_upper']:.0f}")
+        if not signal_type: signal_type = 'SHORT'
+        reasons.append(f"📊 Bollinger: у верхней полосы")
     
-    # 6. Stochastic (15 баллов)
-    if current['stoch_k'] < 20 and current['stoch_d'] < 20:
+    # Stochastic
+    if current['stoch_k'] < 20:
         score += 15
-        if not signal_type:
-            signal_type = 'LONG'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перепроданность)")
-    elif current['stoch_k'] > 80 and current['stoch_d'] > 80:
+        if not signal_type: signal_type = 'LONG'
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
+    elif current['stoch_k'] > 80:
         score += 15
-        if not signal_type:
-            signal_type = 'SHORT'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перекупленность)")
+        if not signal_type: signal_type = 'SHORT'
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
     
-    # 7. EMA тренд (10 баллов)
+    # EMA тренд
     if current['ema_9'] > current['ema_21'] and current['ema_21'] > current['ema_50']:
         score += 10
-        if signal_type == 'LONG':
-            score += 5
-            reasons.append("📈 EMA: золотой крест")
+        if signal_type == 'LONG': score += 5
+        reasons.append("📈 EMA: золотой крест")
     elif current['ema_9'] < current['ema_21'] and current['ema_21'] < current['ema_50']:
         score += 10
-        if signal_type == 'SHORT':
-            score += 5
-            reasons.append("📉 EMA: мертвый крест")
+        if signal_type == 'SHORT': score += 5
+        reasons.append("📉 EMA: мертвый крест")
     
-    # 8. Объем (10 баллов)
+    # Объем
     if current['volume_ratio'] > 1.5:
         score += 10
-        reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x от среднего")
+        reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x")
     
-    # 9. VWAP (10 баллов)
+    # VWAP
     if current['close'] < current['vwap'] and signal_type == 'LONG':
         score += 10
-        reasons.append(f"🎯 VWAP: цена ниже ${current['vwap']:.0f}")
+        reasons.append(f"🎯 VWAP: цена ниже")
     elif current['close'] > current['vwap'] and signal_type == 'SHORT':
         score += 10
-        reasons.append(f"🎯 VWAP: цена выше ${current['vwap']:.0f}")
+        reasons.append(f"🎯 VWAP: цена выше")
     
     confidence = min(100, score)
     
-    if signal_type and confidence >= p['min_conf']:
+    if signal_type and confidence >= min_confidence:
         entry = current['close']
         if signal_type == 'LONG':
             sl = entry * (1 - p['sl_pct'])
@@ -250,40 +234,30 @@ def generate_signal(df, style='day'):
             sl = entry * (1 + p['sl_pct'])
             tp = entry * (1 - p['tp_pct'])
         
-        rr = round(abs(tp - entry) / abs(sl - entry), 1)
-        
         return {
             'signal': signal_type,
-            'price': entry,
             'entry': entry,
             'sl': sl,
             'tp': tp,
             'confidence': confidence,
             'score': score,
-            'rr': rr,
-            'reasons': reasons,
-            'indicators': {
-                'rsi': round(current['rsi'], 1),
-                'macd': round(current['macd_hist'], 2),
-                'vwap': round(current['vwap'], 2),
-                'volume_ratio': round(current['volume_ratio'], 2)
-            }
+            'rr': round(abs(tp - entry) / abs(sl - entry), 1),
+            'reasons': reasons[:5]
         }
     
     return None
 
-def get_full_analysis(symbol, style='day'):
-    """Полный SMC анализ"""
+def get_full_analysis(symbol, style='day', min_confidence=70):
+    """Полный SMC анализ для ЛЮБОЙ монеты"""
     try:
         df = exchange.fetch_ohlcv(symbol, '1h', limit=150)
         df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         df = calculate_indicators(df)
         df = find_order_blocks(df)
-        df = find_fair_value_gaps(df)
         poc = calculate_volume_profile(df)
         
-        signal = generate_signal(df, style)
+        signal = generate_signal(df, style, min_confidence)
         
         current_price = df['close'].iloc[-1]
         
@@ -295,7 +269,7 @@ def get_full_analysis(symbol, style='day'):
             'resistance': df['high'].iloc[-20:].max()
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error for {symbol}: {e}")
         return None
 
 # ==================== TELEGRAM БОТ ====================
@@ -307,17 +281,15 @@ def send_message(chat_id, text):
     except:
         pass
 
-def format_full_signal(symbol, analysis, style='day'):
-    """Форматирует полный сигнал"""
+def format_signal(symbol, analysis, style='day'):
     if not analysis:
         return f"❌ Ошибка получения данных для {symbol}"
     
-    price = analysis['price']
     signal = analysis['signal']
+    price = analysis['price']
     
     if signal:
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
-        
         msg = f"""{emoji} *{signal['signal']} СИГНАЛ* | {symbol} | {style.upper()}
 
 💰 Цена: ${price:.2f}
@@ -329,15 +301,8 @@ def format_full_signal(symbol, analysis, style='day'):
 🛑 SL: ${signal['sl']:.2f}
 🎯 TP: ${signal['tp']:.2f}
 
-📊 *Индикаторы:*
-• RSI: {signal['indicators']['rsi']}
-• MACD: {signal['indicators']['macd']:+.2f}
-• VWAP: ${signal['indicators']['vwap']:.0f}
-• Объем: {signal['indicators']['volume_ratio']:.1f}x
-
-📈 *SMC уровни:*
-"""
-        for r in signal['reasons'][:5]:
+📊 *Причины:*\n"""
+        for r in signal['reasons']:
             msg += f"• {r}\n"
         
         if analysis['poc']:
@@ -348,116 +313,224 @@ def format_full_signal(symbol, analysis, style='day'):
         return f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
 
 💰 Цена: ${price:.2f}
-📊 POC: ${analysis['poc']:.0f}
 🟢 Поддержка: ${analysis['support']:.2f}
 🔴 Сопротивление: ${analysis['resistance']:.2f}
+📊 POC: ${analysis['poc']:.0f}
 
-💡 *Рекомендация:* наблюдение
-"""
+💡 Рекомендация: наблюдение"""
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
+    user_data = get_user_data(chat_id)
     
     if text == "/start":
         send_message(chat_id, """🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
-
-🎯 *Стили торговли:*
-• SCALP (1m-15m) — сделки 5-120 мин
-• DAY (15m-4h) — сделки 2-24 часа  
-• SWING (4h-1d) — сделки 1-7 дней
-
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
+🎯 *Стили:* SCALP (внутри дня), DAY (дневная), SWING (среднесрок)
 
 *Команды:*
-/signals — сигналы по BTC, ETH, SOL (стиль DAY)
-/scalp BTC — скальп-сигнал для BTC
-/swing BTC — свинг-сигнал для BTC
-/btc — анализ BTC
-/status — статус бота
+/add BTC,ETH,SOL — добавить монеты
+/remove DOGE — удалить монету
+/list — мои монеты
+/signals — сигналы по моим монетам
+/analyze PEPE — анализ любой монеты
+/scalp BTC — скальп-сигнал
+/swing BTC — свинг-сигнал
+/settings — настройки
+/status — статус
 /help — помощь""")
     
+    elif text.startswith("/add"):
+        args = text.replace("/add", "").strip().upper().replace(",", " ").split()
+        added = []
+        for arg in args:
+            if not arg.endswith('/USDT'):
+                sym = f"{arg}/USDT"
+            else:
+                sym = arg
+            if sym not in user_data['watchlist']:
+                user_data['watchlist'].append(sym)
+                added.append(sym)
+        save_user_data(chat_id, user_data)
+        send_message(chat_id, f"✅ Добавлено: {', '.join(added)}\n\n📋 Всего монет: {len(user_data['watchlist'])}")
+    
+    elif text.startswith("/remove"):
+        args = text.replace("/remove", "").strip().upper()
+        if args:
+            if not args.endswith('/USDT'):
+                sym = f"{args}/USDT"
+            else:
+                sym = args
+            if sym in user_data['watchlist']:
+                user_data['watchlist'].remove(sym)
+                save_user_data(chat_id, user_data)
+                send_message(chat_id, f"❌ Удалено: {sym}")
+            else:
+                send_message(chat_id, f"⚠️ {sym} не найдена в вашем списке")
+    
+    elif text == "/list":
+        if not user_data['watchlist']:
+            send_message(chat_id, "📭 Список пуст. Добавьте: `/add BTC`")
+        else:
+            msg = "📋 *МОИ МОНЕТЫ*\n\n"
+            for s in user_data['watchlist']:
+                msg += f"• {s}\n"
+            send_message(chat_id, msg)
+    
     elif text == "/signals":
-        send_message(chat_id, "🔍 *Поиск сигналов (стиль DAY)...*")
+        if not user_data['watchlist']:
+            send_message(chat_id, "📭 Нет монет в списке. Добавьте: `/add BTC`")
+            return
         
-        btc = get_full_analysis('BTC/USDT', 'day')
-        eth = get_full_analysis('ETH/USDT', 'day')
-        sol = get_full_analysis('SOL/USDT', 'day')
+        send_message(chat_id, f"🔍 *Поиск сигналов ({user_data['style'].upper()})...*")
         
-        msg = "🚨 *АКТИВНЫЕ СИГНАЛЫ* (DAY)\n\n"
-        msg += format_full_signal('BTC', btc, 'day') + "\n\n"
-        msg += format_full_signal('ETH', eth, 'day') + "\n\n"
-        msg += format_full_signal('SOL', sol, 'day')
+        msg = f"🚨 *СИГНАЛЫ* ({user_data['style'].upper()})\n\n"
+        for sym in user_data['watchlist'][:5]:  # Ограничим 5 монетами
+            name = sym.replace('/USDT', '')
+            analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
+            msg += format_signal(name, analysis, user_data['style']) + "\n\n"
         
         send_message(chat_id, msg[:4000])
     
+    elif text.startswith("/analyze"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/analyze PEPE`")
+            return
+        
+        symbol = parts[1].upper()
+        if not symbol.endswith('/USDT'):
+            sym = f"{symbol}/USDT"
+        else:
+            sym = symbol
+            symbol = symbol.replace('/USDT', '')
+        
+        send_message(chat_id, f"🔍 *Анализ {symbol}...*")
+        analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
+        send_message(chat_id, format_signal(symbol, analysis, user_data['style']))
+    
     elif text.startswith("/scalp"):
-        symbol = text.split()[-1].upper() if len(text.split()) > 1 else 'BTC'
-        if symbol not in ['BTC', 'ETH', 'SOL']:
-            symbol = 'BTC'
+        parts = text.split()
+        symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+        if not symbol.endswith('/USDT'):
+            sym = f"{symbol}/USDT"
+        else:
+            sym = symbol
+            symbol = symbol.replace('/USDT', '')
         
         send_message(chat_id, f"🔍 *Скальп-анализ {symbol}...*")
-        analysis = get_full_analysis(f'{symbol}/USDT', 'scalp')
-        send_message(chat_id, format_full_signal(symbol, analysis, 'scalp'))
+        analysis = get_full_analysis(sym, 'scalp', 65)
+        send_message(chat_id, format_signal(symbol, analysis, 'scalp'))
     
     elif text.startswith("/swing"):
-        symbol = text.split()[-1].upper() if len(text.split()) > 1 else 'BTC'
-        if symbol not in ['BTC', 'ETH', 'SOL']:
-            symbol = 'BTC'
+        parts = text.split()
+        symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+        if not symbol.endswith('/USDT'):
+            sym = f"{symbol}/USDT"
+        else:
+            sym = symbol
+            symbol = symbol.replace('/USDT', '')
         
         send_message(chat_id, f"🔍 *Свинг-анализ {symbol}...*")
-        analysis = get_full_analysis(f'{symbol}/USDT', 'swing')
-        send_message(chat_id, format_full_signal(symbol, analysis, 'swing'))
+        analysis = get_full_analysis(sym, 'swing', 75)
+        send_message(chat_id, format_signal(symbol, analysis, 'swing'))
     
-    elif text == "/btc":
-        send_message(chat_id, "🔍 *Анализ BTC...*")
-        analysis = get_full_analysis('BTC/USDT', 'day')
-        send_message(chat_id, format_full_signal('BTC', analysis, 'day'))
+    elif text == "/settings":
+        send_message(chat_id, f"""⚙️ *НАСТРОЙКИ*
+
+🎯 Стиль: {user_data['style'].upper()}
+📊 Мин. уверенность: {user_data['min_confidence']}%
+⏱️ Таймфрейм: {user_data['timeframe']}
+📋 Монет: {len(user_data['watchlist'])}
+
+*Изменить стиль:* /style scalp|day|swing
+*Изменить уверенность:* /confidence 70""")
+    
+    elif text.startswith("/style"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/style scalp` (scalp/day/swing)")
+            return
+        new_style = parts[1].lower()
+        if new_style in ['scalp', 'day', 'swing']:
+            user_data['style'] = new_style
+            save_user_data(chat_id, user_data)
+            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()}")
+        else:
+            send_message(chat_id, "⚠️ Доступные стили: scalp, day, swing")
+    
+    elif text.startswith("/confidence"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/confidence 70`")
+            return
+        try:
+            val = int(parts[1])
+            if 50 <= val <= 90:
+                user_data['min_confidence'] = val
+                save_user_data(chat_id, user_data)
+                send_message(chat_id, f"✅ Мин. уверенность: {val}%")
+            else:
+                send_message(chat_id, "⚠️ Значение от 50 до 90")
+        except:
+            send_message(chat_id, "⚠️ Введите число")
     
     elif text == "/status":
         btc = get_full_analysis('BTC/USDT', 'day')
         if btc:
             send_message(chat_id, f"""✅ *СТАТУС БОТА*
 
-BTC: ${btc['price']:.2f}
-Поддержка: ${btc['support']:.2f}
-Сопротивление: ${btc['resistance']:.2f}
-POC: ${btc['poc']:.0f}
+🎯 Ваш стиль: {user_data['style'].upper()}
+📊 Мин. уверенность: {user_data['min_confidence']}%
+📋 Монет в списке: {len(user_data['watchlist'])}
 
-🎯 Стили: SCALP | DAY | SWING
-📊 Индикаторы: RSI, MACD, Bollinger, Stochastic, VWAP
-🤖 Версия: SMC Full 2.0
+📈 *BTC:* ${btc['price']:.2f}
+🟢 Поддержка: ${btc['support']:.2f}
+🔴 Сопротивление: ${btc['resistance']:.2f}
+
+🤖 Версия: SMC Full 3.0
 🏦 Биржа: KuCoin""")
         else:
-            send_message(chat_id, "✅ Бот активен\nВерсия: SMC Full 2.0")
+            send_message(chat_id, "✅ Бот активен")
     
     elif text == "/help":
-        send_message(chat_id, """📋 *КОМАНДЫ*
+        send_message(chat_id, """📋 *ВСЕ КОМАНДЫ*
 
-/signals — все сигналы (стиль DAY)
+📌 *Управление монетами:*
+/add BTC,ETH,SOL — добавить монеты
+/remove DOGE — удалить монету
+/list — мои монеты
+
+📌 *Сигналы:*
+/signals — сигналы по моим монетам
+/analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
-/btc — анализ BTC
+
+📌 *Настройки:*
+/settings — текущие настройки
+/style scalp|day|swing — сменить стиль
+/confidence 70 — мин. уверенность
+
+📌 *Другое:*
 /status — статус бота
 /help — эта справка
 
-📊 *Что анализирует:*
-• Order Blocks (зоны крупных игроков)
-• Fair Value Gaps (разрывы цены)
-• Volume Profile (POC, HVN, LVN)
-• RSI, MACD, Bollinger, Stochastic, VWAP
-• Система баллов (0-100)""")
+📊 *Стили:*
+• SCALP — сделки 5-120 мин (SL 0.8%, TP 1.5%)
+• DAY — сделки 2-24 часа (SL 1.5%, TP 3.0%)
+• SWING — сделки 1-7 дней (SL 2.5%, TP 6.0%)""")
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
-print("🚀 SMC FULL BOT запущен")
-print("📊 Методология: SMC/ICT + Order Blocks + FVG + Volume Profile")
-print("📈 Индикаторы: RSI, MACD, Bollinger, Stochastic, VWAP, EMA")
-print("🎯 Стили: SCALP, DAY, SWING")
+print("🚀 SMC FULL BOT 3.0 — МУЛЬТИВАЛЮТНЫЙ")
+print("📊 Команды: /add, /remove, /list, /signals, /analyze, /scalp, /swing")
+print("🎯 Каждый пользователь имеет свой список монет и настройки")
 print("Ожидание сообщений...")
 
 while True:
@@ -468,12 +541,13 @@ while True:
         
         if data.get("ok"):
             for update in data.get("result", []):
-                LAST_UPDATE_ID = update["update_id"]
-                if "message" in update:
-                    msg = update["message"]
-                    chat_id = msg["chat"]["id"]
-                    text = msg.get("text", "")
-                    handle_message(chat_id, text)
+                if update["update_id"] > LAST_UPDATE_ID:
+                    LAST_UPDATE_ID = update["update_id"]
+                    if "message" in update:
+                        msg = update["message"]
+                        chat_id = msg["chat"]["id"]
+                        text = msg.get("text", "")
+                        handle_message(chat_id, text)
     except Exception as e:
         print(f"Error: {e}")
     
