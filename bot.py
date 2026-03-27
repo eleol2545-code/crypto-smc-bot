@@ -6,7 +6,7 @@ import numpy as np
 import json
 import os
 
-TELEGRAM_TOKEN = "7424012414:AAH_5-GVsX8-JMEXyN9w1VYIcK_1PInxiOI"
+TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
 # Папка для хранения данных пользователей
