@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
+import random
+import socks
+import socket
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -20,6 +23,186 @@ LAST_UPDATE_ID = 0
 os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
 os.makedirs('data/charts', exist_ok=True)
+
+# ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ (ДЛЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ) ====================
+
+GLOBAL_WATCHLIST_FILE = 'data/global_watchlist.json'
+GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
+GLOBAL_TRADES_FILE = 'data/global_trades.json'
+
+def get_global_watchlist():
+    """Получает общий список монет для всех пользователей"""
+    if os.path.exists(GLOBAL_WATCHLIST_FILE):
+        with open(GLOBAL_WATCHLIST_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get('watchlist', ['BTC', 'ETH', 'SOL'])
+    return ['BTC', 'ETH', 'SOL']
+
+def save_global_watchlist(watchlist):
+    """Сохраняет общий список монет"""
+    with open(GLOBAL_WATCHLIST_FILE, 'w') as f:
+        json.dump({'watchlist': watchlist}, f, indent=2)
+
+def get_global_settings():
+    """Получает общие настройки"""
+    if os.path.exists(GLOBAL_SETTINGS_FILE):
+        with open(GLOBAL_SETTINGS_FILE, 'r') as f:
+            return json.load(f)
+    return {'style': 'day', 'min_confidence': 70, 'notifications_enabled': True}
+
+def save_global_settings(settings):
+    """Сохраняет общие настройки"""
+    with open(GLOBAL_SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+# ==================== УПРАВЛЕНИЕ СДЕЛКАМИ (ГЛОБАЛЬНОЕ) ====================
+
+class GlobalTradeManager:
+    """Управление сделками для всех пользователей (общее)"""
+    
+    def __init__(self):
+        self.active_trades = {}
+        self.trade_counter = 1
+        self.load_trades()
+    
+    def load_trades(self):
+        """Загружает сделки из файла"""
+        if os.path.exists(GLOBAL_TRADES_FILE):
+            with open(GLOBAL_TRADES_FILE, 'r') as f:
+                data = json.load(f)
+                self.active_trades = data.get('active', {})
+                self.trade_counter = data.get('counter', 1)
+    
+    def save_trades(self):
+        """Сохраняет сделки в файл"""
+        with open(GLOBAL_TRADES_FILE, 'w') as f:
+            json.dump({'active': self.active_trades, 'counter': self.trade_counter}, f, indent=2)
+    
+    def get_next_id(self):
+        """Получает следующий ID для сделки"""
+        current = self.trade_counter
+        self.trade_counter += 1
+        self.save_trades()
+        return current
+    
+    def add_trade(self, symbol, side, entry_price, size=1, leverage=1, tp=None, sl=None):
+        """Добавляет новую сделку"""
+        trade_id = self.get_next_id()
+        trade = {
+            'id': trade_id,
+            'symbol': symbol,
+            'side': side,
+            'entry': entry_price,
+            'size': size,
+            'leverage': leverage,
+            'tp': tp,
+            'sl': sl,
+            'open_time': datetime.now().isoformat(),
+            'status': 'open'
+        }
+        self.active_trades[str(trade_id)] = trade
+        self.save_trades()
+        return trade_id
+    
+    def close_trade(self, trade_id, exit_price):
+        """Закрывает сделку"""
+        trade_id = str(trade_id)
+        if trade_id not in self.active_trades:
+            return None
+        
+        trade = self.active_trades[trade_id]
+        
+        # Расчет с учетом плеча
+        if trade['side'] == 'LONG':
+            pnl_pct = (exit_price - trade['entry']) / trade['entry'] * 100 * trade['leverage']
+            pnl_usdt = trade['size'] * (exit_price - trade['entry']) / trade['entry'] * trade['leverage']
+        else:
+            pnl_pct = (trade['entry'] - exit_price) / trade['entry'] * 100 * trade['leverage']
+            pnl_usdt = trade['size'] * (trade['entry'] - exit_price) / trade['entry'] * trade['leverage']
+        
+        trade['exit'] = exit_price
+        trade['exit_time'] = datetime.now().isoformat()
+        trade['pnl_pct'] = round(pnl_pct, 2)
+        trade['pnl_usdt'] = round(pnl_usdt, 2)
+        trade['status'] = 'closed'
+        
+        # Сохраняем в историю
+        history_file = 'data/trades_history.json'
+        history = []
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+        
+        history.append(trade)
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        # Удаляем из активных
+        del self.active_trades[trade_id]
+        self.save_trades()
+        
+        return trade
+    
+    def reset_all_trades(self):
+        """Сбрасывает все сделки (очищает историю и активные)"""
+        self.active_trades = {}
+        self.trade_counter = 1
+        self.save_trades()
+        
+        if os.path.exists('data/trades_history.json'):
+            os.remove('data/trades_history.json')
+        
+        return True
+    
+    def get_active_trades(self):
+        """Возвращает активные сделки"""
+        return self.active_trades
+    
+    def get_history(self, limit=20):
+        """Возвращает историю сделок"""
+        history_file = 'data/trades_history.json'
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+            return history[-limit:]
+        return []
+    
+    def get_stats(self):
+        """Возвращает статистику по сделкам"""
+        history = self.get_history(1000)
+        
+        if not history:
+            return {
+                'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
+                'total_pnl_pct': 0, 'total_pnl_usdt': 0,
+                'avg_win': 0, 'avg_loss': 0, 'profit_factor': 0,
+                'best_trade': 0, 'worst_trade': 0
+            }
+        
+        wins = [t for t in history if t['pnl_pct'] > 0]
+        losses = [t for t in history if t['pnl_pct'] <= 0]
+        
+        total_pnl_pct = sum(t['pnl_pct'] for t in history)
+        total_pnl_usdt = sum(t['pnl_usdt'] for t in history)
+        
+        avg_win = sum(t['pnl_pct'] for t in wins) / len(wins) if wins else 0
+        avg_loss = sum(t['pnl_pct'] for t in losses) / len(losses) if losses else 0
+        
+        profit_factor = abs(sum(t['pnl_usdt'] for t in wins) / sum(t['pnl_usdt'] for t in losses)) if losses and sum(t['pnl_usdt'] for t in losses) != 0 else 0
+        
+        return {
+            'total_trades': len(history), 'wins': len(wins), 'losses': len(losses),
+            'win_rate': round(len(wins) / len(history) * 100, 2) if history else 0,
+            'total_pnl_pct': round(total_pnl_pct, 2),
+            'total_pnl_usdt': round(total_pnl_usdt, 2),
+            'avg_win': round(avg_win, 2),
+            'avg_loss': round(avg_loss, 2),
+            'profit_factor': round(profit_factor, 2),
+            'best_trade': max([t['pnl_pct'] for t in history]) if history else 0,
+            'worst_trade': min([t['pnl_pct'] for t in history]) if history else 0
+        }
+
+trade_manager = GlobalTradeManager()
 
 # ==================== ФУНКЦИЯ ФОРМАТИРОВАНИЯ ЦЕНЫ ====================
 
@@ -319,13 +502,229 @@ class FootprintManager:
 
 footprint_manager = FootprintManager()
 
-# ==================== КОНФИГУРАЦИЯ БИРЖ ====================
+# ==================== МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР С ПРОКСИ ====================
 
-EXCHANGES = {
-    'bybit': {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT', 'active': True},
-    'kucoin': {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT', 'active': True},
-    'gate': {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT', 'active': True},
-}
+class MultiExchangeAggregator:
+    """Агрегирует данные со всех бирж с поддержкой прокси"""
+    
+    def __init__(self):
+        self.exchanges = {}
+        self.exchange_names = []
+        self.data = {}
+        self.current_proxy = None
+        self.failed_exchanges = {}
+        self.init_exchanges()
+    
+    def get_working_proxy(self):
+        """Пытается найти рабочий прокси"""
+        proxy_list = [
+            'socks5://45.94.31.77:1080',
+            'socks5://45.94.31.78:1080',
+            'http://45.94.31.77:8080',
+            'http://45.94.31.78:8080',
+        ]
+        
+        for proxy in proxy_list:
+            try:
+                import requests
+                response = requests.get('https://api.ipify.org', proxies={'http': proxy, 'https': proxy}, timeout=5)
+                if response.status_code == 200:
+                    print(f"✅ Найден рабочий прокси: {proxy}")
+                    return proxy
+            except:
+                continue
+        
+        print("⚠️ Не удалось найти рабочий прокси, работаем без прокси")
+        return None
+    
+    def set_proxy(self, proxy):
+        """Устанавливает прокси для всех бирж"""
+        if not proxy:
+            return
+        
+        self.current_proxy = proxy
+        print(f"🔄 Установлен прокси: {proxy}")
+        
+        # Пересоздаем биржи с прокси
+        self.init_exchanges(with_proxy=True)
+    
+    def init_exchanges(self, with_proxy=False):
+        """Инициализирует все биржи"""
+        exchanges_config = [
+            {'name': 'Binance', 'class': ccxt.binance, 'params': {'options': {'defaultType': 'future'}}, 'format': 'BTC/USDT', 'active': True},
+            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT', 'active': True},
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT', 'active': True},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT', 'active': True},
+            {'name': 'OKX', 'class': ccxt.okx, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC-USDT-SWAP', 'active': True},
+        ]
+        
+        self.exchanges = {}
+        self.exchange_names = []
+        
+        for config in exchanges_config:
+            try:
+                exchange = config['class'](config['params'])
+                exchange.enableRateLimit = True
+                
+                if with_proxy and self.current_proxy:
+                    exchange.http_proxy = self.current_proxy
+                    exchange.https_proxy = self.current_proxy
+                
+                # Тестируем подключение
+                test_symbol = self.format_symbol_for_exchange(config['name'], 'BTC/USDT')
+                exchange.fetch_ticker(test_symbol)
+                
+                self.exchanges[config['name']] = exchange
+                self.exchange_names.append(config['name'])
+                self.data[config['name']] = {
+                    'price': None, 'volume_24h': None, 'active': True, 
+                    'format': config['format'], 'blocked': False
+                }
+                print(f"✅ Агрегатор: инициализирована {config['name']}")
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'restricted' in error_msg or 'blocked' in error_msg or '451' in error_msg:
+                    print(f"❌ {config['name']} заблокирована в РФ")
+                    self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False, 'blocked': True}
+                else:
+                    print(f"❌ Агрегатор: ошибка {config['name']}: {e}")
+                    self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False, 'error': str(e)}
+    
+    def format_symbol_for_exchange(self, exchange_name, symbol):
+        """Форматирует символ под конкретную биржу"""
+        symbol_clean = symbol.upper().replace('/USDT', '').replace('USDT', '').replace('/', '')
+        
+        if exchange_name == 'Binance':
+            return f"{symbol_clean}/USDT"
+        elif exchange_name == 'Bybit':
+            return f"{symbol_clean}USDT"
+        elif exchange_name == 'KuCoin':
+            return f"{symbol_clean}/USDT"
+        elif exchange_name == 'Gate.io':
+            return f"{symbol_clean}_USDT"
+        elif exchange_name == 'OKX':
+            return f"{symbol_clean}-USDT-SWAP"
+        return f"{symbol_clean}/USDT"
+    
+    def fetch_all_data(self, symbol='BTC/USDT'):
+        """Получает данные со всех бирж"""
+        results = []
+        
+        for name, exchange in self.exchanges.items():
+            try:
+                sym = self.format_symbol_for_exchange(name, symbol)
+                ticker = exchange.fetch_ticker(sym)
+                
+                volume_24h = ticker.get('quoteVolume', ticker.get('baseVolume', 0))
+                
+                results.append({
+                    'exchange': name,
+                    'price': ticker['last'],
+                    'volume_24h': volume_24h,
+                    'bid': ticker['bid'],
+                    'ask': ticker['ask'],
+                    'change': ticker.get('percentage', 0),
+                    'active': True,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                self.data[name]['price'] = ticker['last']
+                self.data[name]['volume_24h'] = volume_24h
+                self.data[name]['active'] = True
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                print(f"❌ Ошибка {name}: {e}")
+                
+                self.data[name]['active'] = False
+                results.append({
+                    'exchange': name,
+                    'price': None,
+                    'volume_24h': 0,
+                    'active': False,
+                    'error': str(e)[:50],
+                    'blocked': 'restricted' in error_msg or 'blocked' in error_msg
+                })
+        
+        return results
+    
+    def get_aggregated_data(self, symbol='BTC/USDT'):
+        """Возвращает агрегированные данные"""
+        results = self.fetch_all_data(symbol)
+        
+        active_results = [r for r in results if r.get('price') and r.get('active')]
+        
+        if not active_results:
+            return {
+                'symbol': symbol,
+                'status': 'Нет доступных бирж',
+                'exchanges': results,
+                'working_count': 0,
+                'total_count': len(results)
+            }
+        
+        total_volume = sum(r['volume_24h'] for r in active_results)
+        if total_volume > 0:
+            weighted_price = sum(r['price'] * r['volume_24h'] for r in active_results) / total_volume
+        else:
+            weighted_price = sum(r['price'] for r in active_results) / len(active_results)
+        
+        avg_price = sum(r['price'] for r in active_results) / len(active_results)
+        prices = [r['price'] for r in active_results]
+        price_spread = max(prices) - min(prices)
+        price_spread_pct = (price_spread / avg_price) * 100 if avg_price > 0 else 0
+        
+        total_volume_24h = total_volume
+        most_active = max(active_results, key=lambda x: x['volume_24h']) if active_results else None
+        
+        divergence = None
+        if price_spread_pct > 0.5:
+            divergence = f"⚠️ Расхождение между биржами: {price_spread_pct:.2f}%"
+        
+        changes = [r['change'] for r in active_results if r.get('change') is not None]
+        if len(changes) >= 3:
+            positive = sum(1 for c in changes if c > 0)
+            negative = sum(1 for c in changes if c < 0)
+            if positive == len(changes):
+                consensus = "🟢 ВСЕ БИРЖИ ВВЕРХ"
+                consensus_signal = "BULLISH"
+            elif negative == len(changes):
+                consensus = "🔴 ВСЕ БИРЖИ ВНИЗ"
+                consensus_signal = "BEARISH"
+            else:
+                consensus = "🟡 РАЗНОНАПРАВЛЕННО"
+                consensus_signal = "NEUTRAL"
+        else:
+            consensus = "⚪ НЕДОСТАТОЧНО ДАННЫХ"
+            consensus_signal = "NEUTRAL"
+        
+        working_exchanges = [r for r in results if r.get('active')]
+        blocked_exchanges = [r for r in results if r.get('blocked')]
+        
+        return {
+            'symbol': symbol,
+            'weighted_price': weighted_price,
+            'avg_price': avg_price,
+            'price_spread': price_spread,
+            'price_spread_pct': price_spread_pct,
+            'total_volume_24h': total_volume_24h,
+            'most_active': most_active['exchange'] if most_active else None,
+            'divergence': divergence,
+            'consensus': consensus,
+            'consensus_signal': consensus_signal,
+            'exchanges': results,
+            'working_exchanges': [r['exchange'] for r in working_exchanges],
+            'blocked_exchanges': [r['exchange'] for r in blocked_exchanges if r.get('blocked')],
+            'working_count': len(working_exchanges),
+            'total_count': len(results),
+            'timestamp': datetime.now().isoformat()
+        }
+
+# Создаем глобальный агрегатор
+aggregator = MultiExchangeAggregator()
+
+# ==================== РОУТЕР ДЛЯ ОСНОВНОГО АНАЛИЗА ====================
 
 class SmartExchangeRouter:
     def __init__(self):
@@ -336,21 +735,29 @@ class SmartExchangeRouter:
         self.initialize_exchanges()
     
     def initialize_exchanges(self):
-        for name, config in EXCHANGES.items():
-            if config['active']:
-                try:
-                    self.exchanges[name] = config['class'](config['params'])
-                    self.exchanges[name].enableRateLimit = True
-                    print(f"✅ Инициализирована {config['name']}")
-                except Exception as e:
-                    print(f"❌ Ошибка {config['name']}: {e}")
-                    config['active'] = False
-        for name, config in EXCHANGES.items():
-            if config['active']:
+        exchanges_config = [
+            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT', 'active': True},
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT', 'active': True},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT', 'active': True},
+        ]
+        
+        for config in exchanges_config:
+            try:
+                exchange = config['class'](config['params'])
+                exchange.enableRateLimit = True
+                self.exchanges[config['name']] = exchange
+                print(f"✅ Инициализирована {config['name']}")
+            except Exception as e:
+                print(f"❌ Ошибка {config['name']}: {e}")
+                config['active'] = False
+        
+        for name, config in [('Bybit', {'format': 'BTCUSDT'}), ('KuCoin', {'format': 'BTC/USDT'}), ('Gate.io', {'format': 'BTC_USDT'})]:
+            if name in self.exchanges:
                 self.current_exchange = self.exchanges[name]
-                self.current_name = config['name']
+                self.current_name = name
                 self.current_format = config['format']
                 break
+        
         orderbook_analyzer.set_exchange(self.current_exchange)
     
     def format_symbol(self, symbol):
@@ -369,146 +776,25 @@ class SmartExchangeRouter:
             return self.current_exchange.fetch_ohlcv(formatted, timeframe, limit=limit)
         except Exception as e:
             print(f"❌ Ошибка на {self.current_name}: {e}")
-            for name, config in EXCHANGES.items():
-                if config['active'] and name != self.current_name.lower():
+            for name, exchange in self.exchanges.items():
+                if name != self.current_name:
                     try:
-                        self.current_exchange = self.exchanges[name]
-                        self.current_name = config['name']
-                        self.current_format = config['format']
+                        self.current_exchange = exchange
+                        self.current_name = name
+                        if name == 'Bybit':
+                            self.current_format = 'BTCUSDT'
+                        elif name == 'KuCoin':
+                            self.current_format = 'BTC/USDT'
+                        else:
+                            self.current_format = 'BTC_USDT'
                         orderbook_analyzer.set_exchange(self.current_exchange)
                         print(f"🔄 Переключено на {self.current_name}")
                         return self.fetch_ohlcv(symbol, timeframe, limit)
                     except:
                         continue
             return None
-    
-    def get_orderbook(self, symbol):
-        try:
-            formatted = self.format_symbol(symbol)
-            return self.current_exchange.fetch_order_book(formatted, limit=20)
-        except Exception as e:
-            return None
 
 router = SmartExchangeRouter()
-
-# ==================== УПРАВЛЕНИЕ СДЕЛКАМИ ====================
-
-class TradeManager:
-    def __init__(self):
-        self.active_trades = {}
-        self.trade_counter = {}
-    
-    def get_next_id(self, chat_id):
-        if chat_id not in self.trade_counter:
-            self.trade_counter[chat_id] = 1
-        current = self.trade_counter[chat_id]
-        self.trade_counter[chat_id] += 1
-        return current
-    
-    def add_trade(self, chat_id, symbol, side, entry_price, size=1, tp=None, sl=None):
-        trade_id = self.get_next_id(chat_id)
-        trade = {
-            'id': trade_id, 'symbol': symbol, 'side': side, 'entry': entry_price,
-            'size': size, 'tp': tp, 'sl': sl, 'open_time': datetime.now().isoformat(), 'status': 'open'
-        }
-        if chat_id not in self.active_trades:
-            self.active_trades[chat_id] = {}
-        self.active_trades[chat_id][trade_id] = trade
-        self._save_trades(chat_id)
-        return trade_id
-    
-    def close_trade(self, chat_id, trade_id, exit_price):
-        if chat_id not in self.active_trades or trade_id not in self.active_trades[chat_id]:
-            return None
-        trade = self.active_trades[chat_id][trade_id]
-        if trade['side'] == 'LONG':
-            pnl_pct = (exit_price - trade['entry']) / trade['entry'] * 100
-            pnl_usdt = trade['size'] * (exit_price - trade['entry'])
-        else:
-            pnl_pct = (trade['entry'] - exit_price) / trade['entry'] * 100
-            pnl_usdt = trade['size'] * (trade['entry'] - exit_price)
-        trade['exit'] = exit_price
-        trade['exit_time'] = datetime.now().isoformat()
-        trade['pnl_pct'] = round(pnl_pct, 2)
-        trade['pnl_usdt'] = round(pnl_usdt, 2)
-        trade['status'] = 'closed'
-        history_file = f'data/history_{chat_id}.json'
-        history = []
-        if os.path.exists(history_file):
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-        history.append(trade)
-        with open(history_file, 'w') as f:
-            json.dump(history, f, indent=2)
-        del self.active_trades[chat_id][trade_id]
-        self._save_trades(chat_id)
-        return trade
-    
-    def get_active_trades(self, chat_id):
-        if chat_id not in self.active_trades:
-            return {}
-        return self.active_trades[chat_id]
-    
-    def get_history(self, chat_id, limit=20):
-        history_file = f'data/history_{chat_id}.json'
-        if os.path.exists(history_file):
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-            return history[-limit:]
-        return []
-    
-    def get_stats(self, chat_id):
-        history = self.get_history(chat_id, 1000)
-        if not history:
-            return {'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0, 'total_pnl_pct': 0, 'total_pnl_usdt': 0, 'avg_win': 0, 'avg_loss': 0, 'profit_factor': 0, 'best_trade': 0, 'worst_trade': 0}
-        wins = [t for t in history if t['pnl_pct'] > 0]
-        losses = [t for t in history if t['pnl_pct'] <= 0]
-        total_pnl_pct = sum(t['pnl_pct'] for t in history)
-        total_pnl_usdt = sum(t['pnl_usdt'] for t in history)
-        avg_win = sum(t['pnl_pct'] for t in wins) / len(wins) if wins else 0
-        avg_loss = sum(t['pnl_pct'] for t in losses) / len(losses) if losses else 0
-        profit_factor = abs(sum(t['pnl_usdt'] for t in wins) / sum(t['pnl_usdt'] for t in losses)) if losses and sum(t['pnl_usdt'] for t in losses) != 0 else 0
-        return {
-            'total_trades': len(history), 'wins': len(wins), 'losses': len(losses),
-            'win_rate': round(len(wins) / len(history) * 100, 2) if history else 0,
-            'total_pnl_pct': round(total_pnl_pct, 2), 'total_pnl_usdt': round(total_pnl_usdt, 2),
-            'avg_win': round(avg_win, 2), 'avg_loss': round(avg_loss, 2), 'profit_factor': round(profit_factor, 2),
-            'best_trade': max([t['pnl_pct'] for t in history]) if history else 0,
-            'worst_trade': min([t['pnl_pct'] for t in history]) if history else 0
-        }
-    
-    def _save_trades(self, chat_id):
-        trades_file = f'data/active_trades_{chat_id}.json'
-        with open(trades_file, 'w') as f:
-            json.dump(self.active_trades.get(chat_id, {}), f, indent=2)
-    
-    def load_trades(self, chat_id):
-        trades_file = f'data/active_trades_{chat_id}.json'
-        if os.path.exists(trades_file):
-            with open(trades_file, 'r') as f:
-                self.active_trades[chat_id] = json.load(f)
-            if self.active_trades[chat_id]:
-                max_id = max([int(k) for k in self.active_trades[chat_id].keys()])
-                self.trade_counter[chat_id] = max_id + 1
-
-trade_manager = TradeManager()
-
-# ==================== ХРАНИЛИЩЕ ПОЛЬЗОВАТЕЛЕЙ ====================
-
-def get_user_data(chat_id):
-    file_path = f'data/user_{chat_id}.json'
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    else:
-        user_data = {'watchlist': ['BTC', 'ETH', 'SOL'], 'style': 'day', 'timeframe': '1h', 'min_confidence': 70, 'notifications_enabled': True}
-        with open(file_path, 'w') as f:
-            json.dump(user_data, f)
-        return user_data
-
-def save_user_data(chat_id, data):
-    with open(f'data/user_{chat_id}.json', 'w') as f:
-        json.dump(data, f)
 
 # ==================== SMC АНАЛИЗАТОР ====================
 
@@ -764,26 +1050,32 @@ def format_signal(symbol, analysis, style='day'):
         msg += f"\n\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"
         return msg
 
-# ==================== АВТОУВЕДОМЛЕНИЯ ====================
-
-def check_signals_for_user(chat_id, user_data):
-    if not user_data.get('notifications_enabled', True):
+def check_signals_for_all():
+    """Проверяет сигналы для всех (глобально)"""
+    settings = get_global_settings()
+    if not settings.get('notifications_enabled', True):
         return
-    watchlist = user_data.get('watchlist', [])
+    
+    watchlist = get_global_watchlist()
     if not watchlist:
         return
+    
     new_signals = []
+    
     for sym in watchlist[:5]:
         for style, min_conf in [('scalp', 65), ('day', 70), ('swing', 75)]:
             analysis = get_full_analysis(sym, style, min_conf)
+            
             if analysis and analysis['signal']:
                 signal = analysis['signal']
                 signal_key = f"{sym}_{style}_{signal['signal']}_{int(signal['entry'])}"
-                sent_file = f'data/sent_signals_{chat_id}.json'
+                
+                sent_file = 'data/sent_signals.json'
                 sent_signals = []
                 if os.path.exists(sent_file):
                     with open(sent_file, 'r') as f:
                         sent_signals = json.load(f)
+                
                 if signal_key not in sent_signals:
                     new_signals.append((sym, style, analysis, signal))
                     sent_signals.append(signal_key)
@@ -791,46 +1083,21 @@ def check_signals_for_user(chat_id, user_data):
                         sent_signals = sent_signals[-100:]
                     with open(sent_file, 'w') as f:
                         json.dump(sent_signals, f)
+    
     for sym, style, analysis, signal in new_signals:
-        emoji = "📈" if signal['signal'] == 'LONG' else "📉"
-        msg = f"""🔔 *АВТОМАТИЧЕСКИЙ СИГНАЛ!*
-
-{emoji} *{signal['signal']}* | {sym} | {style.upper()}
-
-💰 Цена: {format_price(analysis['price'])}
-🎯 Уверенность: {signal['confidence']}%
-📊 Баллы: {signal['score']}/100
-📈 R:R: 1:{signal['rr']}
-
-🚪 Вход: {format_price(signal['entry'])}
-🛑 SL: {format_price(signal['sl'])}
-🎯 TP: {format_price(signal['tp'])}
-
-📊 *Причины:*\n"""
-        for r in signal['reasons'][:3]:
-            msg += f"• {r}\n"
-        if analysis.get('footprint'):
-            fp = analysis['footprint']
-            msg += f"\n📡 *Footprint:* Delta {fp['delta']:+.0f} | {fp['dominant']}"
-        msg += f"\n\n🏦 *Биржа:* {analysis.get('exchange', router.current_name)}"
-        send_message(chat_id, msg)
-        time.sleep(0.5)
+        print(f"🔔 НОВЫЙ СИГНАЛ: {sym} {signal['signal']} {style}")
 
 def start_auto_notifications():
     def notification_loop():
         print("🔄 Запущена фоновая проверка сигналов (каждые 3 минуты)")
         while True:
             try:
-                for filename in os.listdir('data'):
-                    if filename.startswith('user_') and filename.endswith('.json') and 'sent_signals' not in filename:
-                        chat_id = int(filename.replace('user_', '').replace('.json', ''))
-                        with open(f'data/{filename}', 'r') as f:
-                            user_data = json.load(f)
-                        check_signals_for_user(chat_id, user_data)
+                check_signals_for_all()
                 time.sleep(180)
             except Exception as e:
                 print(f"Ошибка в уведомлениях: {e}")
                 time.sleep(60)
+    
     notification_thread = threading.Thread(target=notification_loop, daemon=True)
     notification_thread.start()
 
@@ -838,42 +1105,44 @@ def start_auto_notifications():
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
-    user_data = get_user_data(chat_id)
-    trade_manager.load_trades(chat_id)
+    settings = get_global_settings()
+    watchlist = get_global_watchlist()
     
     if text == "/start":
-        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
+        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — МУЛЬТИБИРЖЕВАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
 📡 *Footprint:* Delta, POC, кластеры объема (WebSocket)
 📊 *Стакан L2:* Стены ликвидности, крупные заявки
+🏦 *Мультибиржевой агрегатор:* Binance, Bybit, KuCoin, Gate.io, OKX
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
 🎯 *Стили:* SCALP, DAY, SWING
 
-🏦 *Биржи:* Bybit, KuCoin, Gate.io (автопереключение)
-🔄 *Текущая биржа:* {router.current_name}
+🌍 *ГЛОБАЛЬНЫЙ РЕЖИМ:* Все пользователи видят одни и те же монеты и сделки!
 
 *Команды:*
-/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты
-/remove DOGE — удалить
-/list — мои монеты
+/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты (для всех!)
+/remove DOGE — удалить (для всех!)
+/list — список монет
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
 /chart BTC — график с уровнями SMC
-/orderbook BTC — анализ стакана (стены ликвидности)
+/orderbook BTC — анализ стакана
+/aggregate BTC — агрегированные данные со всех бирж!
 /analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
-/take LONG BTC 65432 — открыть сделку
+/take LONG BTC 65000 100 5 — открыть сделку (размер USDT, плечо)
 /close 123 — закрыть сделку
 /trades — активные сделки
 /history — история сделок
 /stats — статистика
 /pnl — текущий P&L
-/style scalp|day|swing — сменить стиль
-/confidence 70 — мин. уверенность
+/reset_trades — СБРОСИТЬ ВСЕ СДЕЛКИ
+/style scalp|day|swing — сменить стиль (для всех!)
+/confidence 70 — мин. уверенность (для всех!)
 /notifications_on — включить автоуведомления
 /notifications_off — выключить
 /exchange — текущая биржа
@@ -884,50 +1153,51 @@ def handle_message(chat_id, text):
         args = text.replace("/add", "").strip().upper().replace(",", " ").split()
         added = []
         for arg in args:
-            if arg not in user_data['watchlist']:
-                user_data['watchlist'].append(arg)
+            if arg not in watchlist:
+                watchlist.append(arg)
                 added.append(arg)
-        save_user_data(chat_id, user_data)
-        footprint_manager.update_from_watchlist(user_data['watchlist'])
-        send_message(chat_id, f"✅ Добавлено: {', '.join(added)}\n\n📋 Всего монет: {len(user_data['watchlist'])}\n📡 Footprint активен для {len(footprint_manager.active_symbols)} монет")
+        save_global_watchlist(watchlist)
+        footprint_manager.update_from_watchlist(watchlist)
+        send_message(chat_id, f"✅ Добавлено для ВСЕХ: {', '.join(added)}\n\n📋 Всего монет: {len(watchlist)}")
     
     elif text.startswith("/remove"):
         args = text.replace("/remove", "").strip().upper()
-        if args and args in user_data['watchlist']:
-            user_data['watchlist'].remove(args)
-            save_user_data(chat_id, user_data)
-            footprint_manager.update_from_watchlist(user_data['watchlist'])
-            send_message(chat_id, f"❌ Удалено: {args}\n📡 Footprint активен для {len(footprint_manager.active_symbols)} монет")
+        if args and args in watchlist:
+            watchlist.remove(args)
+            save_global_watchlist(watchlist)
+            footprint_manager.update_from_watchlist(watchlist)
+            send_message(chat_id, f"❌ Удалено для ВСЕХ: {args}")
         else:
             send_message(chat_id, f"⚠️ {args} не найдена")
     
     elif text == "/list":
-        if not user_data['watchlist']:
+        if not watchlist:
             send_message(chat_id, "📭 Список пуст. Добавьте: `/add BTC`")
         else:
-            msg = "📋 *МОИ МОНЕТЫ*\n\n"
-            for s in user_data['watchlist']: msg += f"• {s}\n"
+            msg = "📋 *МОИ МОНЕТЫ* (глобальные)\n\n"
+            for s in watchlist: msg += f"• {s}\n"
             send_message(chat_id, msg)
     
     elif text == "/signals":
-        if not user_data['watchlist']:
+        if not watchlist:
             send_message(chat_id, "📭 Нет монет в списке")
             return
         send_message(chat_id, f"🔍 *Поиск сигналов...*\n🏦 Биржа: {router.current_name}")
-        msg = f"🚨 *СИГНАЛЫ* ({user_data['style'].upper()})\n\n"
-        for sym in user_data['watchlist'][:5]:
-            analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
-            msg += format_signal(sym, analysis, user_data['style']) + "\n\n"
+        msg = f"🚨 *СИГНАЛЫ* ({settings['style'].upper()})\n\n"
+        for sym in watchlist[:5]:
+            analysis = get_full_analysis(sym, settings['style'], settings['min_confidence'])
+            msg += format_signal(sym, analysis, settings['style']) + "\n\n"
         send_message(chat_id, msg[:4000])
     
     elif text == "/all_signals":
-        if not user_data['watchlist']:
+        if not watchlist:
             send_message(chat_id, "📭 Нет монет в списке")
             return
         send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 Биржа: {router.current_name}")
         msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
-        for sym in user_data['watchlist'][:5]:
+        for sym in watchlist[:5]:
             msg += f"📊 *{sym}*\n"
+            
             analysis_scalp = get_full_analysis(sym, 'scalp', 65)
             if analysis_scalp and analysis_scalp['signal']:
                 s = analysis_scalp['signal']
@@ -937,6 +1207,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_scalp['price'] if analysis_scalp else '?'
                 msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
+            
             analysis_day = get_full_analysis(sym, 'day', 70)
             if analysis_day and analysis_day['signal']:
                 s = analysis_day['signal']
@@ -946,6 +1217,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_day['price'] if analysis_day else '?'
                 msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
+            
             analysis_swing = get_full_analysis(sym, 'swing', 75)
             if analysis_swing and analysis_swing['signal']:
                 s = analysis_swing['signal']
@@ -955,6 +1227,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_swing['price'] if analysis_swing else '?'
                 msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
+            
             msg += "\n"
         send_message(chat_id, msg[:4000])
     
@@ -965,10 +1238,10 @@ def handle_message(chat_id, text):
             return
         symbol = parts[1].upper()
         send_message(chat_id, f"📊 *Генерирую график для {symbol}...*")
-        analysis = get_full_analysis(symbol, user_data['style'], user_data['min_confidence'])
+        analysis = get_full_analysis(symbol, settings['style'], settings['min_confidence'])
         if analysis and analysis.get('df') is not None:
-            chart = generate_smc_chart(symbol, analysis['df'], analysis, analysis['signal'], user_data['style'])
-            caption = f"📈 *{symbol}* | {user_data['style'].upper()}\n💰 Цена: {format_price(analysis['price'])}"
+            chart = generate_smc_chart(symbol, analysis['df'], analysis, analysis['signal'], settings['style'])
+            caption = f"📈 *{symbol}* | {settings['style'].upper()}\n💰 Цена: {format_price(analysis['price'])}"
             if analysis['signal']:
                 caption += f"\n🎯 Сигнал: {analysis['signal']['signal']} | Увер: {analysis['signal']['confidence']}%"
             send_photo(chat_id, chart, caption)
@@ -1010,6 +1283,53 @@ def handle_message(chat_id, text):
         except Exception as e:
             send_message(chat_id, f"❌ Ошибка: {e}")
     
+    elif text == "/aggregate":
+        parts = text.split()
+        symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+        if not symbol.endswith('/USDT'):
+            sym = f"{symbol}/USDT"
+        else:
+            sym = symbol
+        
+        send_message(chat_id, f"🔍 *Агрегация данных по {sym} со всех бирж...*")
+        
+        agg = aggregator.get_aggregated_data(sym)
+        
+        if not agg or agg.get('working_count', 0) == 0:
+            send_message(chat_id, f"❌ Не удалось получить данные. Доступно бирж: {agg.get('working_count', 0)}")
+            return
+        
+        msg = f"""📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {sym}*
+
+🏦 *Активных бирж:* {agg['working_count']}/{agg['total_count']}
+
+💰 *Средняя цена:* ${agg['avg_price']:.2f}
+📊 *Взвешенная цена:* ${agg['weighted_price']:.2f}
+📈 *Разброс цен:* {agg['price_spread_pct']:.2f}% (${agg['price_spread']:.2f})
+📊 *Общий объем 24h:* ${agg['total_volume_24h']/1_000_000:.2f}M
+
+🎯 *Консенсус:* {agg['consensus']}
+
+"""
+        
+        if agg['divergence']:
+            msg += f"\n{agg['divergence']}\n"
+        
+        msg += "\n📡 *ПО БИРЖАМ:*\n"
+        for ex in agg['exchanges']:
+            if ex.get('active') and ex.get('price'):
+                emoji = "🟢" if ex['change'] > 0 else "🔴" if ex['change'] < 0 else "⚪"
+                msg += f"  {emoji} *{ex['exchange']}*: ${ex['price']:.2f} | {ex['change']:+.2f}% | Vol: ${ex['volume_24h']/1_000_000:.2f}M\n"
+            elif ex.get('blocked'):
+                msg += f"  ⛔ *{ex['exchange']}*: заблокирована в РФ\n"
+            else:
+                msg += f"  ❌ *{ex['exchange']}*: {ex.get('error', 'недоступна')[:30]}\n"
+        
+        if agg.get('blocked_exchanges'):
+            msg += f"\n🚫 *Заблокированные биржи:* {', '.join(agg['blocked_exchanges'])}"
+        
+        send_message(chat_id, msg[:4000])
+    
     elif text.startswith("/analyze"):
         parts = text.split()
         if len(parts) < 2:
@@ -1017,8 +1337,8 @@ def handle_message(chat_id, text):
             return
         symbol = parts[1].upper()
         send_message(chat_id, f"🔍 *Анализ {symbol}...*\n🏦 Биржа: {router.current_name}")
-        analysis = get_full_analysis(symbol, user_data['style'], user_data['min_confidence'])
-        send_message(chat_id, format_signal(symbol, analysis, user_data['style']))
+        analysis = get_full_analysis(symbol, settings['style'], settings['min_confidence'])
+        send_message(chat_id, format_signal(symbol, analysis, settings['style']))
     
     elif text.startswith("/scalp"):
         parts = text.split()
@@ -1072,7 +1392,7 @@ def handle_message(chat_id, text):
     elif text.startswith("/take"):
         parts = text.split()
         if len(parts) < 4:
-            send_message(chat_id, "📝 *Формат:* `/take LONG BTC 65432`\nИли: `/take SHORT ETH 3245 0.5 3300 3180`\n\n*Параметры:*\n- Сторона: LONG или SHORT\n- Монета: BTC, ETH, SOL\n- Цена входа\n- Размер (опционально)\n- TP (опционально)\n- SL (опционально)")
+            send_message(chat_id, "📝 *Формат:* `/take LONG BTC 65000`\nИли: `/take LONG BTC 65000 100 5`\n\n*Параметры:*\n- Сторона: LONG/SHORT\n- Монета: BTC, ETH, SOL\n- Цена входа\n- Размер (опционально, USDT)\n- Плечо (опционально, x1 по умолчанию)\n- TP (опционально)\n- SL (опционально)")
             return
         side = parts[1].upper()
         symbol = parts[2].upper()
@@ -1082,10 +1402,13 @@ def handle_message(chat_id, text):
             send_message(chat_id, "❌ Цена должна быть числом")
             return
         size = float(parts[4]) if len(parts) > 4 else 1
-        tp = float(parts[5]) if len(parts) > 5 else None
-        sl = float(parts[6]) if len(parts) > 6 else None
-        trade_id = trade_manager.add_trade(chat_id, symbol, side, entry, size, tp, sl)
-        msg = f"✅ *СДЕЛКА ЗАФИКСИРОВАНА*\n\n📊 *{side} {symbol}*\n💰 Вход: ${entry:.2f}\n📦 Размер: {size}\n🆔 ID: {trade_id}"
+        leverage = float(parts[5]) if len(parts) > 5 else 1
+        tp = float(parts[6]) if len(parts) > 6 else None
+        sl = float(parts[7]) if len(parts) > 7 else None
+        
+        trade_id = trade_manager.add_trade(symbol, side, entry, size, leverage, tp, sl)
+        
+        msg = f"✅ *СДЕЛКА ЗАФИКСИРОВАНА*\n\n📊 *{side} {symbol}*\n💰 Вход: ${entry:.2f}\n📦 Размер: {size} USDT\n⚡ Плечо: x{leverage}\n🆔 ID: {trade_id}"
         if tp: msg += f"\n🎯 TP: ${tp:.2f}"
         if sl: msg += f"\n🛑 SL: ${sl:.2f}"
         send_message(chat_id, msg)
@@ -1098,11 +1421,13 @@ def handle_message(chat_id, text):
         try:
             trade_id = int(parts[1])
             exit_price = float(parts[2]) if len(parts) > 2 else None
-            active = trade_manager.get_active_trades(chat_id)
-            if trade_id not in active:
+            
+            active = trade_manager.get_active_trades()
+            if str(trade_id) not in active:
                 send_message(chat_id, f"❌ Сделка с ID {trade_id} не найдена")
                 return
-            trade = active[trade_id]
+            trade = active[str(trade_id)]
+            
             if not exit_price:
                 try:
                     ticker = router.current_exchange.fetch_ticker(router.format_symbol(trade['symbol']))
@@ -1110,16 +1435,17 @@ def handle_message(chat_id, text):
                 except:
                     send_message(chat_id, "❌ Не удалось получить цену. Укажите вручную.")
                     return
-            closed = trade_manager.close_trade(chat_id, trade_id, exit_price)
+            
+            closed = trade_manager.close_trade(trade_id, exit_price)
             if closed:
                 emoji = "✅" if closed['pnl_pct'] > 0 else "❌"
-                msg = f"{emoji} *СДЕЛКА ЗАКРЫТА*\n\n📊 *{closed['side']} {closed['symbol']}*\n💰 Вход: ${closed['entry']:.2f}\n🚪 Выход: ${closed['exit']:.2f}\n📈 P&L: {closed['pnl_pct']:+.2f}% (${closed['pnl_usdt']:+.2f})"
+                msg = f"{emoji} *СДЕЛКА ЗАКРЫТА*\n\n📊 *{closed['side']} {closed['symbol']}*\n💰 Вход: ${closed['entry']:.2f}\n🚪 Выход: ${closed['exit']:.2f}\n📈 P&L: {closed['pnl_pct']:+.2f}% (${closed['pnl_usdt']:+.2f})\n⚡ Плечо: x{closed['leverage']}"
                 send_message(chat_id, msg)
         except ValueError:
             send_message(chat_id, "❌ ID должен быть числом")
     
     elif text == "/trades":
-        active = trade_manager.get_active_trades(chat_id)
+        active = trade_manager.get_active_trades()
         if not active:
             send_message(chat_id, "📭 *Нет активных сделок*")
             return
@@ -1131,29 +1457,29 @@ def handle_message(chat_id, text):
             except:
                 current = trade['entry']
             if trade['side'] == 'LONG':
-                pnl = (current - trade['entry']) / trade['entry'] * 100
+                pnl = (current - trade['entry']) / trade['entry'] * 100 * trade['leverage']
             else:
-                pnl = (trade['entry'] - current) / trade['entry'] * 100
+                pnl = (trade['entry'] - current) / trade['entry'] * 100 * trade['leverage']
             emoji = "📈" if pnl > 0 else "📉"
-            msg += f"🆔 *{trade_id}* | {trade['symbol']} | {trade['side']}\n   💰 Вход: ${trade['entry']:.2f}\n   📍 Текущая: ${current:.2f}\n   📊 P&L: {pnl:+.2f}%\n"
-            if trade['tp']: msg += f"   🎯 TP: ${trade['tp']:.2f}\n"
-            if trade['sl']: msg += f"   🛑 SL: ${trade['sl']:.2f}\n"
+            msg += f"🆔 *{trade_id}* | {trade['symbol']} | {trade['side']}\n   💰 Вход: ${trade['entry']:.2f}\n   📍 Текущая: ${current:.2f}\n   📊 P&L: {pnl:+.2f}%\n   ⚡ Плечо: x{trade['leverage']}\n"
+            if trade.get('tp'): msg += f"   🎯 TP: ${trade['tp']:.2f}\n"
+            if trade.get('sl'): msg += f"   🛑 SL: ${trade['sl']:.2f}\n"
             msg += "\n"
         send_message(chat_id, msg)
     
     elif text == "/history":
-        history = trade_manager.get_history(chat_id, 10)
+        history = trade_manager.get_history(10)
         if not history:
             send_message(chat_id, "📭 *Нет истории сделок*")
             return
         msg = "📜 *ПОСЛЕДНИЕ СДЕЛКИ*\n\n"
         for trade in reversed(history):
             emoji = "✅" if trade['pnl_pct'] > 0 else "❌"
-            msg += f"{emoji} *{trade['side']} {trade['symbol']}*\n   Вход: ${trade['entry']:.2f} → Выход: ${trade['exit']:.2f}\n   P&L: {trade['pnl_pct']:+.2f}% (${trade['pnl_usdt']:+.2f})\n   {trade['open_time'][:16]}\n\n"
+            msg += f"{emoji} *{trade['side']} {trade['symbol']}*\n   Вход: ${trade['entry']:.2f} → Выход: ${trade['exit']:.2f}\n   P&L: {trade['pnl_pct']:+.2f}% (${trade['pnl_usdt']:+.2f})\n   ⚡ Плечо: x{trade['leverage']}\n   {trade['open_time'][:16]}\n\n"
         send_message(chat_id, msg)
     
     elif text == "/stats":
-        stats = trade_manager.get_stats(chat_id)
+        stats = trade_manager.get_stats()
         if stats['total_trades'] == 0:
             send_message(chat_id, "📭 *Нет данных для статистики*\n\nСначала отметьте сделки через `/take`")
             return
@@ -1175,7 +1501,7 @@ def handle_message(chat_id, text):
         send_message(chat_id, msg)
     
     elif text == "/pnl":
-        active = trade_manager.get_active_trades(chat_id)
+        active = trade_manager.get_active_trades()
         if not active:
             send_message(chat_id, "📭 *Нет открытых сделок*")
             return
@@ -1188,16 +1514,20 @@ def handle_message(chat_id, text):
             except:
                 current = trade['entry']
             if trade['side'] == 'LONG':
-                pnl_pct = (current - trade['entry']) / trade['entry'] * 100
-                pnl_usdt = trade['size'] * (current - trade['entry'])
+                pnl_pct = (current - trade['entry']) / trade['entry'] * 100 * trade['leverage']
+                pnl_usdt = trade['size'] * (current - trade['entry']) / trade['entry'] * trade['leverage']
             else:
-                pnl_pct = (trade['entry'] - current) / trade['entry'] * 100
-                pnl_usdt = trade['size'] * (trade['entry'] - current)
+                pnl_pct = (trade['entry'] - current) / trade['entry'] * 100 * trade['leverage']
+                pnl_usdt = trade['size'] * (trade['entry'] - current) / trade['entry'] * trade['leverage']
             total_pnl += pnl_usdt
             emoji = "📈" if pnl_pct > 0 else "📉"
-            msg += f"{emoji} *{trade['side']} {trade['symbol']}* (ID: {trade_id})\n   P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})\n\n"
+            msg += f"{emoji} *{trade['side']} {trade['symbol']}* (ID: {trade_id})\n   P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})\n   ⚡ Плечо: x{trade['leverage']}\n\n"
         msg += f"\n💰 *ИТОГО:* ${total_pnl:+.2f}"
         send_message(chat_id, msg)
+    
+    elif text == "/reset_trades":
+        trade_manager.reset_all_trades()
+        send_message(chat_id, "🗑️ *ВСЕ СДЕЛКИ СБРОШЕНЫ*\n\nИстория и активные сделки очищены.")
     
     # ==================== НАСТРОЙКИ ====================
     
@@ -1208,9 +1538,9 @@ def handle_message(chat_id, text):
             return
         new_style = parts[1].lower()
         if new_style in ['scalp', 'day', 'swing']:
-            user_data['style'] = new_style
-            save_user_data(chat_id, user_data)
-            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()}")
+            settings['style'] = new_style
+            save_global_settings(settings)
+            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()} (для всех пользователей)")
         else:
             send_message(chat_id, "⚠️ Доступные стили: scalp, day, swing")
     
@@ -1222,22 +1552,22 @@ def handle_message(chat_id, text):
         try:
             val = int(parts[1])
             if 50 <= val <= 90:
-                user_data['min_confidence'] = val
-                save_user_data(chat_id, user_data)
-                send_message(chat_id, f"✅ Мин. уверенность: {val}%")
+                settings['min_confidence'] = val
+                save_global_settings(settings)
+                send_message(chat_id, f"✅ Мин. уверенность: {val}% (для всех пользователей)")
             else:
                 send_message(chat_id, "⚠️ Значение от 50 до 90")
         except:
             send_message(chat_id, "⚠️ Введите число")
     
     elif text == "/notifications_on":
-        user_data['notifications_enabled'] = True
-        save_user_data(chat_id, user_data)
+        settings['notifications_enabled'] = True
+        save_global_settings(settings)
         send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*\n\nБуду присылать сигналы автоматически!")
     
     elif text == "/notifications_off":
-        user_data['notifications_enabled'] = False
-        save_user_data(chat_id, user_data)
+        settings['notifications_enabled'] = False
+        save_global_settings(settings)
         send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
     
     elif text == "/exchange":
@@ -1245,16 +1575,16 @@ def handle_message(chat_id, text):
     
     elif text == "/status":
         btc = get_full_analysis('BTC', 'day')
-        active_trades = len(trade_manager.get_active_trades(chat_id))
+        active_trades = len(trade_manager.get_active_trades())
         if btc:
-            msg = f"""✅ *СТАТУС БОТА*
+            msg = f"""✅ *СТАТУС БОТА* (Глобальный)
 
 🏦 *Биржа:* {router.current_name}
-🎯 *Ваш стиль:* {user_data['style'].upper()}
-📊 *Мин. уверенность:* {user_data['min_confidence']}%
-📋 *Монет:* {len(user_data['watchlist'])}
+🎯 *Стиль:* {settings['style'].upper()}
+📊 *Мин. уверенность:* {settings['min_confidence']}%
+📋 *Монет:* {len(watchlist)}
 📡 *Footprint активен:* {len(footprint_manager.active_symbols)} монет
-🔔 *Уведомления:* {'✅ ВКЛ' if user_data.get('notifications_enabled', True) else '❌ ВЫКЛ'}
+🔔 *Уведомления:* {'✅ ВКЛ' if settings.get('notifications_enabled', True) else '❌ ВЫКЛ'}
 🔄 *Активных сделок:* {active_trades}
 
 📈 *BTC:* {format_price(btc['price'])}
@@ -1267,16 +1597,17 @@ def handle_message(chat_id, text):
     elif text == "/help":
         send_message(chat_id, """📋 *ВСЕ КОМАНДЫ*
 
-📌 *Управление монетами:*
-/add BTC,DOGE,PEPE — добавить
-/remove DOGE — удалить
-/list — мои монеты
+📌 *Управление монетами (глобально!):*
+/add BTC,DOGE,PEPE — добавить для ВСЕХ
+/remove DOGE — удалить для ВСЕХ
+/list — список монет
 
 📌 *Сигналы:*
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
 /chart BTC — график с уровнями SMC
 /orderbook BTC — анализ стакана
+/aggregate BTC — агрегированные данные со всех бирж!
 /analyze PEPE — анализ любой
 /scalp BTC — скальп
 /swing BTC — свинг
@@ -1285,17 +1616,18 @@ def handle_message(chat_id, text):
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
 
-📌 *Управление сделками:*
-/take LONG BTC 65432 — открыть сделку
+📌 *Управление сделками (глобально!):*
+/take LONG BTC 65000 100 5 — открыть (размер USDT, плечо)
 /close 123 — закрыть сделку
 /trades — активные сделки
 /history — история сделок
 /stats — статистика
 /pnl — текущий P&L
+/reset_trades — СБРОСИТЬ ВСЕ СДЕЛКИ
 
-📌 *Настройки:*
-/style scalp|day|swing — сменить стиль
-/confidence 70 — мин. уверенность
+📌 *Настройки (глобально!):*
+/style scalp|day|swing — сменить стиль для ВСЕХ
+/confidence 70 — мин. уверенность для ВСЕХ
 /notifications_on — включить автоуведомления
 /notifications_off — выключить
 
@@ -1310,22 +1642,28 @@ def handle_message(chat_id, text):
 # ==================== ЗАПУСК ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT 8.0 — С ГРАФИКАМИ, СТАКАНОМ L2 И СТАТИСТИКОЙ")
+print("🚀 SMC FULL BOT 10.0 — МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР")
 print("=" * 60)
-print(f"🏦 Текущая биржа: {router.current_name}")
+print(f"🏦 Текущая биржа для анализа: {router.current_name}")
+print("🌍 Режим: ГЛОБАЛЬНЫЙ — все пользователи видят одни и те же монеты и сделки")
 print("📡 Footprint: автоматически для добавленных монет")
-print("📊 Графики: /chart BTC")
-print("📚 Стакан L2: /orderbook BTC")
+print("📊 Мультибиржевой агрегатор: Binance, Bybit, KuCoin, Gate.io, OKX")
+print("📚 Команды: /aggregate BTC, /orderbook BTC, /chart BTC")
 print("📈 Статистика: /stats, /trades, /pnl")
+print("🗑️ Сброс сделок: /reset_trades")
 print("🔔 Автоуведомления: каждые 3 минуты")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
-for sym in ['BTC', 'ETH', 'SOL']:
+# Запускаем начальные монеты
+watchlist = get_global_watchlist()
+for sym in watchlist:
     footprint_manager.start_for_symbol(sym)
 
+# Запускаем автоматические уведомления
 start_auto_notifications()
 
+# Основной цикл
 while True:
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
