@@ -717,24 +717,32 @@ def handle_message(chat_id, text):
         analysis = get_full_analysis(symbol, 'swing', 75)
         send_message(chat_id, format_signal(symbol, analysis, 'swing'))
     
-    elif text.startswith("/footprint"):
-        parts = text.split()
-        symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+elif text.startswith("/footprint"):
+    parts = text.split()
+    symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+    
+    if symbol in footprint_analyzers:
+        fp = footprint_analyzers[symbol].get_footprint()
         
-        if symbol in footprint_analyzers:
-            fp = footprint_analyzers[symbol].get_footprint()
-            msg = f"""📡 *FOOTPRINT {symbol}*
+        # Получаем текущую цену
+        try:
+            ticker = router.current_exchange.fetch_ticker(router.format_symbol(symbol))
+            current_price = ticker['last']
+        except:
+            current_price = None
+        
+        msg = f"""📡 *FOOTPRINT {symbol}*
 
-💰 Цена: {format_price(analysis['price']) if 'analysis' in dir() else '?'}
+💰 Цена: {format_price(current_price) if current_price else 'N/A'}
 📊 Delta: {'+' if fp['delta'] > 0 else ''}{fp['delta']:.0f}
 📈 Buy Volume: {fp['buy_volume']:.0f}
 📉 Sell Volume: {fp['sell_volume']:.0f}
 🎯 Доминируют: {fp['dominant']}
 📍 POC: {format_price(fp['poc']) if fp['poc'] else 'N/A'}
 🔄 Сделок: {fp['trades_count']}"""
-            send_message(chat_id, msg)
-        else:
-            send_message(chat_id, f"⚠️ Footprint не доступен для {symbol}")
+        send_message(chat_id, msg)
+    else:
+        send_message(chat_id, f"⚠️ Footprint не доступен для {symbol}")
     
     elif text == "/exchange":
         send_message(chat_id, f"🏦 *Текущая биржа:* {router.current_name}\n\nДоступные: Bybit, KuCoin, Gate.io")
