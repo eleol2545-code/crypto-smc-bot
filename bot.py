@@ -5,34 +5,211 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import threading
+import asyncio
+import websockets
+from datetime import datetime
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
 os.makedirs('data', exist_ok=True)
+os.makedirs('data/footprint', exist_ok=True)
 
 # ==================== ФУНКЦИЯ ФОРМАТИРОВАНИЯ ЦЕНЫ ====================
 
 def format_price(price):
-    """Форматирует цену в зависимости от величины"""
     if price is None:
         return "0"
-    
     if price < 0.00001:
-        # PEPE, SHIB, BONK — 8 знаков
         return f"{price:.8f}".rstrip('0').rstrip('.')
     elif price < 0.001:
-        # Мелкие альты — 6 знаков
         return f"{price:.6f}".rstrip('0').rstrip('.')
     elif price < 1:
-        # Цены меньше 1$ — 4 знака
         return f"{price:.4f}".rstrip('0').rstrip('.')
     elif price < 1000:
-        # BTC, ETH — 2 знака
         return f"{price:.2f}"
     else:
-        # Крупные цены
         return f"{price:.0f}"
+
+# ==================== КЛАСТЕРНЫЙ АНАЛИЗ (FOOTPRINT) ====================
+
+class FootprintAnalyzer:
+    """Кластерный анализ через WebSocket (реальное время)"""
+    
+    def __init__(self, symbol='BTCUSDT'):
+        self.symbol = symbol
+        self.trades = []  # история сделок
+        self.delta = 0  # кумулятивная дельта
+        self.delta_history = []  # история дельты
+        self.price_clusters = {}  # кластеры по ценам
+        self.last_poc = None
+        self.buy_volume = 0
+        self.sell_volume = 0
+        self.running = False
+        self.ws_thread = None
+    
+    def start(self):
+        """Запускает WebSocket в отдельном потоке"""
+        self.running = True
+        self.ws_thread = threading.Thread(target=self._run_websocket, daemon=True)
+        self.ws_thread.start()
+        print(f"📡 Footprint WebSocket запущен для {self.symbol}")
+    
+    def _run_websocket(self):
+        """Запускает WebSocket для сбора данных"""
+        asyncio.run(self._connect_websocket())
+    
+    async def _connect_websocket(self):
+        """Подключение к Bybit WebSocket"""
+        url = "wss://stream.bybit.com/v5/public/linear"
+        
+        try:
+            async with websockets.connect(url) as ws:
+                # Подписываемся на сделки
+                subscribe_msg = {
+                    "op": "subscribe",
+                    "args": [f"publicTrade.{self.symbol}"]
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                print(f"✅ WebSocket подключен для {self.symbol}")
+                
+                async for message in ws:
+                    data = json.loads(message)
+                    if 'topic' in data and 'publicTrade' in data['topic']:
+                        await self._process_trades(data['data'])
+        except Exception as e:
+            print(f"❌ WebSocket ошибка: {e}")
+            # Переподключение через 5 секунд
+            time.sleep(5)
+            if self.running:
+                await self._connect_websocket()
+    
+    async def _process_trades(self, trades):
+        """Обрабатывает каждую сделку"""
+        for trade in trades:
+            price = float(trade['p'])
+            volume = float(trade['v'])
+            side = 'BUY' if trade['S'] == 'Buy' else 'SELL'
+            
+            # Обновляем дельту
+            if side == 'BUY':
+                self.delta += volume
+                self.buy_volume += volume
+            else:
+                self.delta -= volume
+                self.sell_volume += volume
+            
+            # Сохраняем в историю
+            self.trades.append({
+                'time': trade['T'],
+                'price': price,
+                'volume': volume,
+                'side': side
+            })
+            
+            # Ограничиваем историю
+            if len(self.trades) > 10000:
+                self.trades = self.trades[-5000:]
+            
+            # Кластеризация по цене
+            price_level = round(price, 2) if price > 1 else round(price, 6)
+            if price_level not in self.price_clusters:
+                self.price_clusters[price_level] = {'buy': 0, 'sell': 0, 'total': 0}
+            
+            if side == 'BUY':
+                self.price_clusters[price_level]['buy'] += volume
+            else:
+                self.price_clusters[price_level]['sell'] += volume
+            self.price_clusters[price_level]['total'] += volume
+            
+            # Обновляем POC каждые 100 сделок
+            if len(self.trades) % 100 == 0:
+                self._update_poc()
+            
+            # Сохраняем дельту в историю
+            self.delta_history.append({
+                'time': datetime.now().isoformat(),
+                'delta': self.delta,
+                'price': price
+            })
+            if len(self.delta_history) > 1000:
+                self.delta_history = self.delta_history[-500:]
+    
+    def _update_poc(self):
+        """Обновляет Point of Control (цена с макс объемом)"""
+        if not self.price_clusters:
+            return
+        
+        max_volume = 0
+        poc_price = None
+        
+        for price, data in self.price_clusters.items():
+            if data['total'] > max_volume:
+                max_volume = data['total']
+                poc_price = price
+        
+        self.last_poc = poc_price
+    
+    def get_footprint(self):
+        """Возвращает текущие Footprint данные"""
+        return {
+            'delta': self.delta,
+            'buy_volume': self.buy_volume,
+            'sell_volume': self.sell_volume,
+            'poc': self.last_poc,
+            'trades_count': len(self.trades),
+            'dominant': 'BUYERS' if self.delta > 0 else 'SELLERS' if self.delta < 0 else 'NEUTRAL'
+        }
+    
+    def get_delta_trend(self, minutes=5):
+        """Возвращает тренд дельты за N минут"""
+        if not self.delta_history:
+            return 0
+        
+        now = datetime.now()
+        cutoff = now.timestamp() - (minutes * 60)
+        
+        recent = [d for d in self.delta_history 
+                  if datetime.fromisoformat(d['time']).timestamp() > cutoff]
+        
+        if not recent:
+            return 0
+        
+        return recent[-1]['delta'] - recent[0]['delta'] if len(recent) > 1 else 0
+    
+    def get_absorption_signal(self):
+        """Обнаруживает абсорбцию — крупные объемы не двигают цену"""
+        if len(self.trades) < 100:
+            return None
+        
+        recent_trades = self.trades[-100:]
+        price_change = abs(recent_trades[-1]['price'] - recent_trades[0]['price'])
+        volume_sum = sum(t['volume'] for t in recent_trades)
+        
+        # Если большой объем, но цена почти не изменилась
+        if volume_sum > 100 and price_change < 10:
+            return {
+                'type': 'ABSORPTION',
+                'volume': volume_sum,
+                'price_change': price_change,
+                'signal': 'SETUP'  # Крупные игроки набирают позицию
+            }
+        return None
+
+# Инициализируем Footprint для основных монет
+footprint_analyzers = {
+    'BTC': FootprintAnalyzer('BTCUSDT'),
+    'ETH': FootprintAnalyzer('ETHUSDT'),
+    'SOL': FootprintAnalyzer('SOLUSDT')
+}
+
+# Запускаем WebSocket для каждой монеты
+for symbol, analyzer in footprint_analyzers.items():
+    analyzer.start()
+    time.sleep(1)  # Небольшая задержка между запусками
+
+print("✅ Footprint анализаторы запущены для BTC, ETH, SOL")
 
 # ==================== КОНФИГУРАЦИЯ БИРЖ ====================
 
@@ -59,8 +236,6 @@ EXCHANGES = {
         'active': True,
     },
 }
-
-# ==================== SMART EXCHANGE ROUTER ====================
 
 class SmartExchangeRouter:
     def __init__(self):
@@ -131,7 +306,8 @@ def get_user_data(chat_id):
             'watchlist': ['BTC', 'ETH', 'SOL'],
             'style': 'day',
             'timeframe': '1h',
-            'min_confidence': 70
+            'min_confidence': 70,
+            'footprint_enabled': True
         }
         with open(file_path, 'w') as f:
             json.dump(user_data, f)
@@ -233,7 +409,7 @@ def calculate_volume_profile(df, bars=50):
     poc = max(levels, key=lambda x: x['volume']) if levels else None
     return poc['price'] if poc else None
 
-def generate_signal(df, style='day', min_confidence=70):
+def generate_signal(df, style='day', min_confidence=70, footprint_data=None):
     if df is None or len(df) < 50:
         return None
     
@@ -250,6 +426,7 @@ def generate_signal(df, style='day', min_confidence=70):
     signal_type = None
     reasons = []
     
+    # 1. SMC Order Blocks
     if current['bullish_ob'] == 1:
         score += 20
         signal_type = 'LONG'
@@ -259,6 +436,7 @@ def generate_signal(df, style='day', min_confidence=70):
         signal_type = 'SHORT'
         reasons.append(f"🔴 Медвежий OB: {format_price(current['ob_low'])}-{format_price(current['ob_high'])}")
     
+    # 2. RSI
     if current['rsi'] < 30:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -268,6 +446,7 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 RSI: {current['rsi']:.1f} (перекупленность)")
     
+    # 3. MACD
     if current['macd_hist'] > 0 and signal_type == 'LONG':
         score += 15
         reasons.append(f"📈 MACD: +{current['macd_hist']:.4f}")
@@ -275,6 +454,7 @@ def generate_signal(df, style='day', min_confidence=70):
         score += 15
         reasons.append(f"📉 MACD: {current['macd_hist']:.4f}")
     
+    # 4. Bollinger
     if current['close'] <= current['bb_lower'] * 1.005:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -284,18 +464,41 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 Bollinger: у верхней полосы {format_price(current['bb_upper'])}")
     
+    # 5. Stochastic
     if current['stoch_k'] < 20:
         score += 15
         if not signal_type: signal_type = 'LONG'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перепроданность)")
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
     elif current['stoch_k'] > 80:
         score += 15
         if not signal_type: signal_type = 'SHORT'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перекупленность)")
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
     
+    # 6. Объем
     if current['volume_ratio'] > 1.5:
         score += 10
         reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x")
+    
+    # ========== НОВОЕ: FOOTPRINT АНАЛИЗ ==========
+    if footprint_data:
+        # Delta
+        if footprint_data['delta'] > 500:
+            score += 15
+            if signal_type == 'LONG':
+                score += 5
+            reasons.append(f"📊 Delta: +{footprint_data['delta']:.0f} (покупатели доминируют)")
+        elif footprint_data['delta'] < -500:
+            score += 15
+            if signal_type == 'SHORT':
+                score += 5
+            reasons.append(f"📊 Delta: {footprint_data['delta']:.0f} (продавцы доминируют)")
+        
+        # POC
+        if footprint_data['poc']:
+            poc_distance = abs(current['close'] - footprint_data['poc']) / current['close'] * 100
+            if poc_distance < 1:
+                score += 10
+                reasons.append(f"🎯 POC: {format_price(footprint_data['poc'])} (цена у POC)")
     
     confidence = min(100, score)
     
@@ -316,7 +519,7 @@ def generate_signal(df, style='day', min_confidence=70):
             'confidence': confidence,
             'score': score,
             'rr': round(abs(tp - entry) / abs(sl - entry), 1),
-            'reasons': reasons[:5]
+            'reasons': reasons[:7]
         }
     
     return None
@@ -331,7 +534,13 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
         df = calculate_indicators(df)
         df = find_order_blocks(df)
         poc = calculate_volume_profile(df)
-        signal = generate_signal(df, style, min_confidence)
+        
+        # Получаем Footprint данные
+        footprint = None
+        if symbol in footprint_analyzers:
+            footprint = footprint_analyzers[symbol].get_footprint()
+        
+        signal = generate_signal(df, style, min_confidence, footprint)
         
         return {
             'price': df['close'].iloc[-1],
@@ -339,7 +548,8 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
             'poc': poc,
             'support': df['low'].iloc[-20:].min(),
             'resistance': df['high'].iloc[-20:].max(),
-            'exchange': router.current_name
+            'exchange': router.current_name,
+            'footprint': footprint
         }
     except Exception as e:
         print(f"Error for {symbol}: {e}")
@@ -356,11 +566,12 @@ def send_message(chat_id, text):
 
 def format_signal(symbol, analysis, style='day'):
     if not analysis:
-        return f"❌ Ошибка получения данных для {symbol}\nБиржа: {router.current_name}"
+        return f"❌ Ошибка получения данных для {symbol}"
     
     signal = analysis['signal']
     price = analysis['price']
     exchange = analysis.get('exchange', router.current_name)
+    footprint = analysis.get('footprint')
     
     if signal:
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
@@ -377,48 +588,63 @@ def format_signal(symbol, analysis, style='day'):
 
 📊 *Причины:*\n"""
         for r in signal['reasons']:
-            msg += f"• {r}\n"
+            msg += f"• {r}\n"""
+        
+        # Footprint данные
+        if footprint:
+            msg += f"\n📡 *FOOTPRINT:*\n"
+            msg += f"• Delta: {'+' if footprint['delta'] > 0 else ''}{footprint['delta']:.0f}\n"
+            msg += f"• Доминируют: {footprint['dominant']}\n"
+            if footprint['poc']:
+                msg += f"• POC: {format_price(footprint['poc'])}\n"
+            msg += f"• Сделок: {footprint['trades_count']}\n"
         
         if analysis['poc']:
-            msg += f"• 🟡 POC: {format_price(analysis['poc'])}\n"
+            msg += f"• 🟡 POC (свечной): {format_price(analysis['poc'])}\n"
         
         msg += f"\n🏦 *Биржа:* {exchange}"
         return msg
     else:
-        return f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
+        msg = f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
 
 💰 Цена: {format_price(price)}
 🟢 Поддержка: {format_price(analysis['support'])}
 🔴 Сопротивление: {format_price(analysis['resistance'])}
-📊 POC: {format_price(analysis['poc'])}
-
-💡 Рекомендация: наблюдение
-🏦 *Биржа:* {exchange}"""
-
-# ==================== ОСНОВНОЙ ЦИКЛ ====================
+📊 POC: {format_price(analysis['poc'])}"""
+        
+        if footprint:
+            msg += f"\n\n📡 *FOOTPRINT:*\n"
+            msg += f"• Delta: {'+' if footprint['delta'] > 0 else ''}{footprint['delta']:.0f}\n"
+            msg += f"• Доминируют: {footprint['dominant']}\n"
+            msg += f"• Сделок: {footprint['trades_count']}\n"
+        
+        msg += f"\n\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"
+        return msg
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
     user_data = get_user_data(chat_id)
     
     if text == "/start":
-        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — МУЛЬТИБИРЖЕВАЯ ВЕРСИЯ
+        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
+📡 *Footprint:* Delta, POC, кластеры объема (WebSocket)
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
 🎯 *Стили:* SCALP, DAY, SWING
 
-🏦 *Активные биржи:* Bybit, KuCoin, Gate.io
+🏦 *Биржи:* Bybit, KuCoin, Gate.io (автопереключение)
 🔄 *Текущая биржа:* {router.current_name}
 
 *Команды:*
 /add BTC,ETH,SOL,DOGE,PEPE — добавить монеты
-/remove DOGE — удалить монету
+/remove DOGE — удалить
 /list — мои монеты
-/signals — сигналы по моим монетам
+/signals — сигналы + Footprint
 /analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
+/footprint BTC — Footprint данные
 /exchange — текущая биржа
 /status — статус
 /help — помощь""")
@@ -491,13 +717,32 @@ def handle_message(chat_id, text):
         analysis = get_full_analysis(symbol, 'swing', 75)
         send_message(chat_id, format_signal(symbol, analysis, 'swing'))
     
+    elif text.startswith("/footprint"):
+        parts = text.split()
+        symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
+        
+        if symbol in footprint_analyzers:
+            fp = footprint_analyzers[symbol].get_footprint()
+            msg = f"""📡 *FOOTPRINT {symbol}*
+
+💰 Цена: {format_price(analysis['price']) if 'analysis' in dir() else '?'}
+📊 Delta: {'+' if fp['delta'] > 0 else ''}{fp['delta']:.0f}
+📈 Buy Volume: {fp['buy_volume']:.0f}
+📉 Sell Volume: {fp['sell_volume']:.0f}
+🎯 Доминируют: {fp['dominant']}
+📍 POC: {format_price(fp['poc']) if fp['poc'] else 'N/A'}
+🔄 Сделок: {fp['trades_count']}"""
+            send_message(chat_id, msg)
+        else:
+            send_message(chat_id, f"⚠️ Footprint не доступен для {symbol}")
+    
     elif text == "/exchange":
         send_message(chat_id, f"🏦 *Текущая биржа:* {router.current_name}\n\nДоступные: Bybit, KuCoin, Gate.io")
     
     elif text == "/status":
         btc = get_full_analysis('BTC', 'day')
         if btc:
-            send_message(chat_id, f"""✅ *СТАТУС БОТА*
+            msg = f"""✅ *СТАТУС БОТА*
 
 🏦 *Биржа:* {router.current_name}
 🎯 *Ваш стиль:* {user_data['style'].upper()}
@@ -506,34 +751,54 @@ def handle_message(chat_id, text):
 
 📈 *BTC:* {format_price(btc['price'])}
 🟢 *Поддержка:* {format_price(btc['support'])}
-🔴 *Сопротивление:* {format_price(btc['resistance'])}""")
+🔴 *Сопротивление:* {format_price(btc['resistance'])}"""
+            
+            # Добавляем Footprint статус
+            if 'BTC' in footprint_analyzers:
+                fp = footprint_analyzers['BTC'].get_footprint()
+                msg += f"\n\n📡 *Footprint:*\n• Delta: {'+' if fp['delta'] > 0 else ''}{fp['delta']:.0f}\n• Доминируют: {fp['dominant']}"
+            
+            send_message(chat_id, msg)
         else:
             send_message(chat_id, "✅ Бот активен")
     
     elif text == "/help":
-        send_message(chat_id, """📋 *КОМАНДЫ*
+        send_message(chat_id, """📋 *ВСЕ КОМАНДЫ*
 
+📌 *Управление монетами:*
 /add BTC,DOGE,PEPE — добавить
 /remove DOGE — удалить
 /list — мои монеты
-/signals — сигналы
+
+📌 *Сигналы:*
+/signals — сигналы + Footprint
 /analyze PEPE — анализ любой
 /scalp BTC — скальп
 /swing BTC — свинг
+/footprint BTC — Footprint данные
+
+📌 *Другое:*
 /exchange — текущая биржа
 /status — статус
 /help — помощь
 
-📊 *Стили:* SCALP (0.8%/1.5%), DAY (1.5%/3%), SWING (2.5%/6%)""")
+📊 *Стили:* SCALP (0.8%/1.5%), DAY (1.5%/3%), SWING (2.5%/6%)
+
+📡 *Footprint:* Delta, POC, кластеры объема в реальном времени""")
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
-print("🚀 SMC MULTI-EXCHANGE BOT")
+print("=" * 60)
+print("🚀 SMC FULL BOT 4.0 — С КЛАСТЕРНЫМ АНАЛИЗОМ (FOOTPRINT)")
+print("=" * 60)
 print(f"🏦 Текущая биржа: {router.current_name}")
-print("Ожидание сообщений...")
+print("📡 Footprint: WebSocket активен для BTC, ETH, SOL")
+print("📊 Команды: /add, /remove, /list, /signals, /analyze, /scalp, /swing, /footprint")
+print("=" * 60)
+print("Ожидание сообщений...\n")
 
 while True:
     try:
