@@ -5,27 +5,142 @@ import pandas as pd
 import numpy as np
 import json
 import os
+from datetime import datetime
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
-# Папка для хранения данных пользователей
 os.makedirs('data', exist_ok=True)
 
-exchange = ccxt.kucoin({'enableRateLimit': True})
+# ==================== КОНФИГУРАЦИЯ БИРЖ ====================
+
+EXCHANGES = {
+    'bybit': {
+        'name': 'Bybit',
+        'class': ccxt.bybit,
+        'params': {'options': {'defaultType': 'linear'}},
+        'format': 'BTCUSDT',  # формат без /
+        'active': True,
+        'last_error': None
+    },
+    'kucoin': {
+        'name': 'KuCoin',
+        'class': ccxt.kucoin,
+        'params': {},
+        'format': 'BTC/USDT',  # формат с /
+        'active': True,
+        'last_error': None
+    },
+    'gate': {
+        'name': 'Gate.io',
+        'class': ccxt.gateio,
+        'params': {'options': {'defaultType': 'swap'}},
+        'format': 'BTC_USDT',  # формат с _
+        'active': True,
+        'last_error': None
+    },
+    'okx': {
+        'name': 'OKX',
+        'class': ccxt.okx,
+        'params': {'options': {'defaultType': 'swap'}},
+        'format': 'BTC-USDT-SWAP',
+        'active': True,
+        'last_error': None
+    }
+}
+
+# ==================== SMART EXCHANGE ROUTER ====================
+
+class SmartExchangeRouter:
+    """Автоматически выбирает работающую биржу"""
+    
+    def __init__(self):
+        self.exchanges = {}
+        self.current_exchange = None
+        self.current_name = None
+        self.initialize_exchanges()
+    
+    def initialize_exchanges(self):
+        """Инициализирует все биржи"""
+        for name, config in EXCHANGES.items():
+            if config['active']:
+                try:
+                    self.exchanges[name] = config['class'](config['params'])
+                    self.exchanges[name].enableRateLimit = True
+                    print(f"✅ Инициализирована {config['name']}")
+                except Exception as e:
+                    print(f"❌ Ошибка инициализации {config['name']}: {e}")
+                    config['active'] = False
+        
+        # Выбираем первую активную биржу
+        for name, config in EXCHANGES.items():
+            if config['active']:
+                self.current_exchange = self.exchanges[name]
+                self.current_name = config['name']
+                self.current_format = config['format']
+                break
+    
+    def test_connection(self):
+        """Тестирует подключение к текущей бирже"""
+        try:
+            ticker = self.current_exchange.fetch_ticker('BTC/USDT' if '/' in self.current_format else 'BTCUSDT')
+            return True
+        except Exception as e:
+            print(f"⚠️ {self.current_name} не отвечает: {e}")
+            return False
+    
+    def switch_to_next_exchange(self):
+        """Переключается на следующую работающую биржу"""
+        for name, config in EXCHANGES.items():
+            if config['active'] and name != self.current_name.lower():
+                try:
+                    self.current_exchange = self.exchanges[name]
+                    self.current_name = config['name']
+                    self.current_format = config['format']
+                    print(f"🔄 Переключено на {self.current_name}")
+                    return True
+                except:
+                    continue
+        return False
+    
+    def format_symbol(self, symbol):
+        """Форматирует символ под текущую биржу"""
+        symbol = symbol.upper().replace('USDT', '').replace('/', '')
+        
+        if self.current_format == 'BTCUSDT':
+            return f"{symbol}USDT"
+        elif self.current_format == 'BTC/USDT':
+            return f"{symbol}/USDT"
+        elif self.current_format == 'BTC_USDT':
+            return f"{symbol}_USDT"
+        elif self.current_format == 'BTC-USDT-SWAP':
+            return f"{symbol}-USDT-SWAP"
+        return f"{symbol}/USDT"
+    
+    def fetch_ohlcv(self, symbol, timeframe='1h', limit=150):
+        """Получает свечи с текущей биржи, при ошибке переключается"""
+        try:
+            formatted = self.format_symbol(symbol)
+            return self.current_exchange.fetch_ohlcv(formatted, timeframe, limit=limit)
+        except Exception as e:
+            print(f"❌ Ошибка на {self.current_name}: {e}")
+            if self.switch_to_next_exchange():
+                return self.fetch_ohlcv(symbol, timeframe, limit)
+            return None
+
+# Инициализируем роутер
+router = SmartExchangeRouter()
 
 # ==================== ХРАНИЛИЩЕ ПОЛЬЗОВАТЕЛЕЙ ====================
 
 def get_user_data(chat_id):
-    """Получает данные пользователя, создает если нет"""
     file_path = f'data/user_{chat_id}.json'
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
             return json.load(f)
     else:
-        # Новый пользователь с настройками по умолчанию
         user_data = {
-            'watchlist': ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'],
+            'watchlist': ['BTC', 'ETH', 'SOL'],
             'style': 'day',
             'timeframe': '1h',
             'min_confidence': 70
@@ -35,7 +150,6 @@ def get_user_data(chat_id):
         return user_data
 
 def save_user_data(chat_id, data):
-    """Сохраняет данные пользователя"""
     with open(f'data/user_{chat_id}.json', 'w') as f:
         json.dump(data, f)
 
@@ -152,7 +266,7 @@ def generate_signal(df, style='day', min_confidence=70):
     signal_type = None
     reasons = []
     
-    # Order Blocks
+    # 1. Order Blocks (20 баллов)
     if current['bullish_ob'] == 1:
         score += 20
         signal_type = 'LONG'
@@ -162,7 +276,7 @@ def generate_signal(df, style='day', min_confidence=70):
         signal_type = 'SHORT'
         reasons.append(f"🔴 Медвежий OB: ${current['ob_low']:.0f}-${current['ob_high']:.0f}")
     
-    # RSI
+    # 2. RSI (15 баллов)
     if current['rsi'] < 30:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -172,7 +286,7 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 RSI: {current['rsi']:.1f} (перекупленность)")
     
-    # MACD
+    # 3. MACD (15 баллов)
     if current['macd_hist'] > 0 and signal_type == 'LONG':
         score += 15
         reasons.append(f"📈 MACD: +{current['macd_hist']:.2f}")
@@ -180,48 +294,50 @@ def generate_signal(df, style='day', min_confidence=70):
         score += 15
         reasons.append(f"📉 MACD: {current['macd_hist']:.2f}")
     
-    # Bollinger
+    # 4. Bollinger Bands (15 баллов)
     if current['close'] <= current['bb_lower'] * 1.005:
         score += 15
         if not signal_type: signal_type = 'LONG'
-        reasons.append(f"📊 Bollinger: у нижней полосы")
+        reasons.append(f"📊 Bollinger: у нижней полосы ${current['bb_lower']:.0f}")
     elif current['close'] >= current['bb_upper'] * 0.995:
         score += 15
         if not signal_type: signal_type = 'SHORT'
-        reasons.append(f"📊 Bollinger: у верхней полосы")
+        reasons.append(f"📊 Bollinger: у верхней полосы ${current['bb_upper']:.0f}")
     
-    # Stochastic
-    if current['stoch_k'] < 20:
+    # 5. Stochastic (15 баллов)
+    if current['stoch_k'] < 20 and current['stoch_d'] < 20:
         score += 15
         if not signal_type: signal_type = 'LONG'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
-    elif current['stoch_k'] > 80:
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перепроданность)")
+    elif current['stoch_k'] > 80 and current['stoch_d'] > 80:
         score += 15
         if not signal_type: signal_type = 'SHORT'
-        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
+        reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f} (перекупленность)")
     
-    # EMA тренд
+    # 6. EMA тренд (10 баллов)
     if current['ema_9'] > current['ema_21'] and current['ema_21'] > current['ema_50']:
         score += 10
-        if signal_type == 'LONG': score += 5
+        if signal_type == 'LONG':
+            score += 5
         reasons.append("📈 EMA: золотой крест")
     elif current['ema_9'] < current['ema_21'] and current['ema_21'] < current['ema_50']:
         score += 10
-        if signal_type == 'SHORT': score += 5
+        if signal_type == 'SHORT':
+            score += 5
         reasons.append("📉 EMA: мертвый крест")
     
-    # Объем
+    # 7. Объем (10 баллов)
     if current['volume_ratio'] > 1.5:
         score += 10
-        reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x")
+        reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x от среднего")
     
-    # VWAP
+    # 8. VWAP (10 баллов)
     if current['close'] < current['vwap'] and signal_type == 'LONG':
         score += 10
-        reasons.append(f"🎯 VWAP: цена ниже")
+        reasons.append(f"🎯 VWAP: цена ниже ${current['vwap']:.0f}")
     elif current['close'] > current['vwap'] and signal_type == 'SHORT':
         score += 10
-        reasons.append(f"🎯 VWAP: цена выше")
+        reasons.append(f"🎯 VWAP: цена выше ${current['vwap']:.0f}")
     
     confidence = min(100, score)
     
@@ -234,24 +350,36 @@ def generate_signal(df, style='day', min_confidence=70):
             sl = entry * (1 + p['sl_pct'])
             tp = entry * (1 - p['tp_pct'])
         
+        rr = round(abs(tp - entry) / abs(sl - entry), 1)
+        
         return {
             'signal': signal_type,
-            'entry': entry,
-            'sl': sl,
-            'tp': tp,
+            'entry': round(entry, 2),
+            'sl': round(sl, 2),
+            'tp': round(tp, 2),
             'confidence': confidence,
             'score': score,
-            'rr': round(abs(tp - entry) / abs(sl - entry), 1),
-            'reasons': reasons[:5]
+            'rr': rr,
+            'reasons': reasons[:6],
+            'indicators': {
+                'rsi': round(current['rsi'], 1),
+                'macd': round(current['macd_hist'], 2),
+                'vwap': round(current['vwap'], 2),
+                'volume_ratio': round(current['volume_ratio'], 2)
+            }
         }
     
     return None
 
 def get_full_analysis(symbol, style='day', min_confidence=70):
-    """Полный SMC анализ для ЛЮБОЙ монеты"""
+    """Полный SMC анализ с автоматическим выбором биржи"""
     try:
-        df = exchange.fetch_ohlcv(symbol, '1h', limit=150)
-        df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        # Получаем свечи через Smart Router
+        ohlcv = router.fetch_ohlcv(symbol, '1h', 150)
+        if not ohlcv:
+            return None
+        
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         df = calculate_indicators(df)
         df = find_order_blocks(df)
@@ -266,7 +394,8 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
             'signal': signal,
             'poc': poc,
             'support': df['low'].iloc[-20:].min(),
-            'resistance': df['high'].iloc[-20:].max()
+            'resistance': df['high'].iloc[-20:].max(),
+            'exchange': router.current_name
         }
     except Exception as e:
         print(f"Error for {symbol}: {e}")
@@ -283,10 +412,11 @@ def send_message(chat_id, text):
 
 def format_signal(symbol, analysis, style='day'):
     if not analysis:
-        return f"❌ Ошибка получения данных для {symbol}"
+        return f"❌ Ошибка получения данных для {symbol}\nБиржа: {router.current_name}"
     
     signal = analysis['signal']
     price = analysis['price']
+    exchange = analysis.get('exchange', router.current_name)
     
     if signal:
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
@@ -301,13 +431,20 @@ def format_signal(symbol, analysis, style='day'):
 🛑 SL: ${signal['sl']:.2f}
 🎯 TP: ${signal['tp']:.2f}
 
-📊 *Причины:*\n"""
+📊 *Индикаторы:*
+• RSI: {signal['indicators']['rsi']}
+• MACD: {signal['indicators']['macd']:+.2f}
+• VWAP: ${signal['indicators']['vwap']:.0f}
+• Объем: {signal['indicators']['volume_ratio']:.1f}x
+
+📈 *SMC уровни:*\n"""
         for r in signal['reasons']:
             msg += f"• {r}\n"
         
         if analysis['poc']:
             msg += f"• 🟡 POC: ${analysis['poc']:.0f}\n"
         
+        msg += f"\n🏦 *Биржа:* {exchange}"
         return msg
     else:
         return f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
@@ -317,21 +454,25 @@ def format_signal(symbol, analysis, style='day'):
 🔴 Сопротивление: ${analysis['resistance']:.2f}
 📊 POC: ${analysis['poc']:.0f}
 
-💡 Рекомендация: наблюдение"""
+💡 Рекомендация: наблюдение
+🏦 *Биржа:* {exchange}"""
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
     user_data = get_user_data(chat_id)
     
     if text == "/start":
-        send_message(chat_id, """🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
+        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — МУЛЬТИБИРЖЕВАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
 🎯 *Стили:* SCALP (внутри дня), DAY (дневная), SWING (среднесрок)
 
+🏦 *Активные биржи:* Bybit, KuCoin, Gate.io, OKX (автопереключение)
+🔄 *Текущая биржа:* {router.current_name}
+
 *Команды:*
-/add BTC,ETH,SOL — добавить монеты
+/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты
 /remove DOGE — удалить монету
 /list — мои монеты
 /signals — сигналы по моим монетам
@@ -340,16 +481,14 @@ def handle_message(chat_id, text):
 /swing BTC — свинг-сигнал
 /settings — настройки
 /status — статус
+/exchange — текущая биржа
 /help — помощь""")
     
     elif text.startswith("/add"):
         args = text.replace("/add", "").strip().upper().replace(",", " ").split()
         added = []
         for arg in args:
-            if not arg.endswith('/USDT'):
-                sym = f"{arg}/USDT"
-            else:
-                sym = arg
+            sym = arg.upper()
             if sym not in user_data['watchlist']:
                 user_data['watchlist'].append(sym)
                 added.append(sym)
@@ -359,10 +498,7 @@ def handle_message(chat_id, text):
     elif text.startswith("/remove"):
         args = text.replace("/remove", "").strip().upper()
         if args:
-            if not args.endswith('/USDT'):
-                sym = f"{args}/USDT"
-            else:
-                sym = args
+            sym = args
             if sym in user_data['watchlist']:
                 user_data['watchlist'].remove(sym)
                 save_user_data(chat_id, user_data)
@@ -384,13 +520,12 @@ def handle_message(chat_id, text):
             send_message(chat_id, "📭 Нет монет в списке. Добавьте: `/add BTC`")
             return
         
-        send_message(chat_id, f"🔍 *Поиск сигналов ({user_data['style'].upper()})...*")
+        send_message(chat_id, f"🔍 *Поиск сигналов ({user_data['style'].upper()})...*\n🏦 Биржа: {router.current_name}")
         
         msg = f"🚨 *СИГНАЛЫ* ({user_data['style'].upper()})\n\n"
-        for sym in user_data['watchlist'][:5]:  # Ограничим 5 монетами
-            name = sym.replace('/USDT', '')
+        for sym in user_data['watchlist'][:5]:
             analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
-            msg += format_signal(name, analysis, user_data['style']) + "\n\n"
+            msg += format_signal(sym, analysis, user_data['style']) + "\n\n"
         
         send_message(chat_id, msg[:4000])
     
@@ -401,40 +536,22 @@ def handle_message(chat_id, text):
             return
         
         symbol = parts[1].upper()
-        if not symbol.endswith('/USDT'):
-            sym = f"{symbol}/USDT"
-        else:
-            sym = symbol
-            symbol = symbol.replace('/USDT', '')
-        
-        send_message(chat_id, f"🔍 *Анализ {symbol}...*")
-        analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
+        send_message(chat_id, f"🔍 *Анализ {symbol}...*\n🏦 Биржа: {router.current_name}")
+        analysis = get_full_analysis(symbol, user_data['style'], user_data['min_confidence'])
         send_message(chat_id, format_signal(symbol, analysis, user_data['style']))
     
     elif text.startswith("/scalp"):
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
-        if not symbol.endswith('/USDT'):
-            sym = f"{symbol}/USDT"
-        else:
-            sym = symbol
-            symbol = symbol.replace('/USDT', '')
-        
-        send_message(chat_id, f"🔍 *Скальп-анализ {symbol}...*")
-        analysis = get_full_analysis(sym, 'scalp', 65)
+        send_message(chat_id, f"🔍 *Скальп-анализ {symbol}...*\n🏦 Биржа: {router.current_name}")
+        analysis = get_full_analysis(symbol, 'scalp', 65)
         send_message(chat_id, format_signal(symbol, analysis, 'scalp'))
     
     elif text.startswith("/swing"):
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
-        if not symbol.endswith('/USDT'):
-            sym = f"{symbol}/USDT"
-        else:
-            sym = symbol
-            symbol = symbol.replace('/USDT', '')
-        
-        send_message(chat_id, f"🔍 *Свинг-анализ {symbol}...*")
-        analysis = get_full_analysis(sym, 'swing', 75)
+        send_message(chat_id, f"🔍 *Свинг-анализ {symbol}...*\n🏦 Биржа: {router.current_name}")
+        analysis = get_full_analysis(symbol, 'swing', 75)
         send_message(chat_id, format_signal(symbol, analysis, 'swing'))
     
     elif text == "/settings":
@@ -445,8 +562,9 @@ def handle_message(chat_id, text):
 ⏱️ Таймфрейм: {user_data['timeframe']}
 📋 Монет: {len(user_data['watchlist'])}
 
-*Изменить стиль:* /style scalp|day|swing
-*Изменить уверенность:* /confidence 70""")
+*Изменить:*
+/style scalp|day|swing
+/confidence 70""")
     
     elif text.startswith("/style"):
         parts = text.split()
@@ -477,35 +595,39 @@ def handle_message(chat_id, text):
         except:
             send_message(chat_id, "⚠️ Введите число")
     
+    elif text == "/exchange":
+        send_message(chat_id, f"🏦 *Текущая биржа:* {router.current_name}\n\nДоступные биржи:\n• Bybit ✅\n• KuCoin ✅\n• Gate.io ✅\n• OKX ⚠️\n\n*Автоматическое переключение при ошибках*")
+    
     elif text == "/status":
-        btc = get_full_analysis('BTC/USDT', 'day')
+        btc = get_full_analysis('BTC', 'day')
         if btc:
             send_message(chat_id, f"""✅ *СТАТУС БОТА*
 
-🎯 Ваш стиль: {user_data['style'].upper()}
-📊 Мин. уверенность: {user_data['min_confidence']}%
-📋 Монет в списке: {len(user_data['watchlist'])}
+🏦 *Биржа:* {router.current_name}
+🎯 *Ваш стиль:* {user_data['style'].upper()}
+📊 *Мин. уверенность:* {user_data['min_confidence']}%
+📋 *Монет в списке:* {len(user_data['watchlist'])}
 
 📈 *BTC:* ${btc['price']:.2f}
-🟢 Поддержка: ${btc['support']:.2f}
-🔴 Сопротивление: ${btc['resistance']:.2f}
+🟢 *Поддержка:* ${btc['support']:.2f}
+🔴 *Сопротивление:* ${btc['resistance']:.2f}
+📊 *POC:* ${btc['poc']:.0f}
 
-🤖 Версия: SMC Full 3.0
-🏦 Биржа: KuCoin""")
+🤖 *Версия:* SMC Multi-Exchange 3.0""")
         else:
-            send_message(chat_id, "✅ Бот активен")
+            send_message(chat_id, "✅ Бот активен\n🏦 Мультибиржевой режим")
     
     elif text == "/help":
         send_message(chat_id, """📋 *ВСЕ КОМАНДЫ*
 
 📌 *Управление монетами:*
-/add BTC,ETH,SOL — добавить монеты
-/remove DOGE — удалить монету
+/add BTC,ETH,SOL,DOGE,PEPE — добавить
+/remove DOGE — удалить
 /list — мои монеты
 
 📌 *Сигналы:*
-/signals — сигналы по моим монетам
-/analyze PEPE — анализ любой монеты
+/signals — по моим монетам
+/analyze PEPE — анализ любой
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
 
@@ -515,23 +637,34 @@ def handle_message(chat_id, text):
 /confidence 70 — мин. уверенность
 
 📌 *Другое:*
+/exchange — текущая биржа
 /status — статус бота
 /help — эта справка
 
 📊 *Стили:*
 • SCALP — сделки 5-120 мин (SL 0.8%, TP 1.5%)
 • DAY — сделки 2-24 часа (SL 1.5%, TP 3.0%)
-• SWING — сделки 1-7 дней (SL 2.5%, TP 6.0%)""")
+• SWING — сделки 1-7 дней (SL 2.5%, TP 6.0%)
+
+🏦 *Биржи:* Bybit, KuCoin, Gate.io, OKX (автопереключение)""")
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
-print("🚀 SMC FULL BOT 3.0 — МУЛЬТИВАЛЮТНЫЙ")
+print("=" * 60)
+print("🚀 SMC MULTI-EXCHANGE BOT 3.0")
+print("=" * 60)
+print(f"🏦 Активные биржи:")
+for name, config in EXCHANGES.items():
+    if config['active']:
+        print(f"   ✅ {config['name']}")
+print(f"\n🔄 Текущая биржа: {router.current_name}")
 print("📊 Команды: /add, /remove, /list, /signals, /analyze, /scalp, /swing")
 print("🎯 Каждый пользователь имеет свой список монет и настройки")
-print("Ожидание сообщений...")
+print("=" * 60)
+print("Ожидание сообщений...\n")
 
 while True:
     try:
