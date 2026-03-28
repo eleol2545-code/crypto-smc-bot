@@ -3,3 +3,6 @@ ccxt
 pandas
 numpy
 websockets
+matplotlib
+mplfinance
+plotly
