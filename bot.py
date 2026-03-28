@@ -250,7 +250,13 @@ def get_user_data(chat_id):
         with open(file_path, 'r') as f:
             return json.load(f)
     else:
-        user_data = {'watchlist': ['BTC', 'ETH', 'SOL'], 'style': 'day', 'timeframe': '1h', 'min_confidence': 70}
+        user_data = {
+            'watchlist': ['BTC', 'ETH', 'SOL'],
+            'style': 'day',
+            'timeframe': '1h',
+            'min_confidence': 70,
+            'notifications_enabled': True
+        }
         with open(file_path, 'w') as f:
             json.dump(user_data, f)
         return user_data
@@ -501,18 +507,102 @@ def format_signal(symbol, analysis, style='day'):
         return msg
 
 def format_signal_compact(symbol, analysis, style_name):
-    """Компактный формат для отображения в /all_signals"""
     if not analysis:
         return f"❌ {style_name}: ошибка"
-    
     signal = analysis['signal']
     price = analysis['price']
-    
     if signal:
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
         return f"{emoji} *{style_name}* {signal['signal']} | Увер: {signal['confidence']}% | R:R 1:{signal['rr']}\n   🚪 {format_price(signal['entry'])} | 🛑 {format_price(signal['sl'])} | 🎯 {format_price(signal['tp'])}"
     else:
         return f"⏳ *{style_name}* | Нет сигнала | Цена: {format_price(price)}"
+
+# ==================== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ====================
+
+def check_signals_for_user(chat_id, user_data):
+    """Проверяет сигналы для пользователя и отправляет уведомления"""
+    if not user_data.get('notifications_enabled', True):
+        return
+    
+    watchlist = user_data.get('watchlist', [])
+    if not watchlist:
+        return
+    
+    new_signals = []
+    
+    for sym in watchlist[:5]:
+        for style, min_conf in [('scalp', 65), ('day', 70), ('swing', 75)]:
+            analysis = get_full_analysis(sym, style, min_conf)
+            
+            if analysis and analysis['signal']:
+                signal = analysis['signal']
+                signal_key = f"{sym}_{style}_{signal['signal']}_{int(signal['entry'])}"
+                
+                sent_file = f'data/sent_signals_{chat_id}.json'
+                sent_signals = []
+                if os.path.exists(sent_file):
+                    with open(sent_file, 'r') as f:
+                        sent_signals = json.load(f)
+                
+                if signal_key not in sent_signals:
+                    new_signals.append((sym, style, analysis, signal))
+                    sent_signals.append(signal_key)
+                    if len(sent_signals) > 100:
+                        sent_signals = sent_signals[-100:]
+                    with open(sent_file, 'w') as f:
+                        json.dump(sent_signals, f)
+    
+    for sym, style, analysis, signal in new_signals:
+        emoji = "📈" if signal['signal'] == 'LONG' else "📉"
+        
+        msg = f"""🔔 *АВТОМАТИЧЕСКИЙ СИГНАЛ!*
+
+{emoji} *{signal['signal']}* | {sym} | {style.upper()}
+
+💰 Цена: {format_price(analysis['price'])}
+🎯 Уверенность: {signal['confidence']}%
+📊 Баллы: {signal['score']}/100
+📈 R:R: 1:{signal['rr']}
+
+🚪 Вход: {format_price(signal['entry'])}
+🛑 SL: {format_price(signal['sl'])}
+🎯 TP: {format_price(signal['tp'])}
+
+📊 *Причины:*\n"""
+        for r in signal['reasons'][:3]:
+            msg += f"• {r}\n"
+        
+        if analysis.get('footprint'):
+            fp = analysis['footprint']
+            msg += f"\n📡 *Footprint:* Delta {fp['delta']:+.0f} | {fp['dominant']}"
+        
+        msg += f"\n\n🏦 *Биржа:* {analysis.get('exchange', router.current_name)}"
+        
+        send_message(chat_id, msg)
+        time.sleep(0.5)
+
+def start_auto_notifications():
+    """Запускает фоновую проверку сигналов для всех пользователей"""
+    
+    def notification_loop():
+        print("🔄 Запущена фоновая проверка сигналов (каждые 3 минуты)")
+        while True:
+            try:
+                for filename in os.listdir('data'):
+                    if filename.startswith('user_') and filename.endswith('.json') and 'sent_signals' not in filename:
+                        chat_id = int(filename.replace('user_', '').replace('.json', ''))
+                        with open(f'data/{filename}', 'r') as f:
+                            user_data = json.load(f)
+                        check_signals_for_user(chat_id, user_data)
+                time.sleep(180)
+            except Exception as e:
+                print(f"Ошибка в уведомлениях: {e}")
+                time.sleep(60)
+    
+    notification_thread = threading.Thread(target=notification_loop, daemon=True)
+    notification_thread.start()
+
+# ==================== ОБРАБОТЧИК КОМАНД ====================
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
@@ -540,6 +630,8 @@ def handle_message(chat_id, text):
 /swing BTC — свинг-сигнал
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
+/notifications_on — включить автоуведомления
+/notifications_off — выключить автоуведомления
 /exchange — текущая биржа
 /status — статус
 /help — помощь""")
@@ -596,7 +688,6 @@ def handle_message(chat_id, text):
         for sym in user_data['watchlist'][:5]:
             msg += f"📊 *{sym}*\n"
             
-            # SCALP
             analysis_scalp = get_full_analysis(sym, 'scalp', 65)
             if analysis_scalp and analysis_scalp['signal']:
                 s = analysis_scalp['signal']
@@ -607,7 +698,6 @@ def handle_message(chat_id, text):
                 price = analysis_scalp['price'] if analysis_scalp else '?'
                 msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
             
-            # DAY
             analysis_day = get_full_analysis(sym, 'day', 70)
             if analysis_day and analysis_day['signal']:
                 s = analysis_day['signal']
@@ -618,7 +708,6 @@ def handle_message(chat_id, text):
                 price = analysis_day['price'] if analysis_day else '?'
                 msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
             
-            # SWING
             analysis_swing = get_full_analysis(sym, 'swing', 75)
             if analysis_swing and analysis_swing['signal']:
                 s = analysis_swing['signal']
@@ -690,6 +779,16 @@ def handle_message(chat_id, text):
         else:
             send_message(chat_id, "📡 Нет активных Footprint монет\nДобавьте монеты через `/add`")
     
+    elif text == "/notifications_on":
+        user_data['notifications_enabled'] = True
+        save_user_data(chat_id, user_data)
+        send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*\n\nБуду присылать сигналы автоматически при появлении!")
+    
+    elif text == "/notifications_off":
+        user_data['notifications_enabled'] = False
+        save_user_data(chat_id, user_data)
+        send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
+    
     elif text == "/exchange":
         send_message(chat_id, f"🏦 *Текущая биржа:* {router.current_name}\n\nДоступные: Bybit, KuCoin, Gate.io")
     
@@ -703,6 +802,7 @@ def handle_message(chat_id, text):
 📊 *Мин. уверенность:* {user_data['min_confidence']}%
 📋 *Монет:* {len(user_data['watchlist'])}
 📡 *Footprint активен:* {len(footprint_manager.active_symbols)} монет
+🔔 *Уведомления:* {'✅ ВКЛ' if user_data.get('notifications_enabled', True) else '❌ ВЫКЛ'}
 
 📈 *BTC:* {format_price(btc['price'])}
 🟢 *Поддержка:* {format_price(btc['support'])}
@@ -730,6 +830,10 @@ def handle_message(chat_id, text):
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
 
+📌 *Уведомления:*
+/notifications_on — включить автоуведомления
+/notifications_off — выключить автоуведомления
+
 📌 *Другое:*
 /exchange — текущая биржа
 /status — статус
@@ -742,14 +846,15 @@ def handle_message(chat_id, text):
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
-# ==================== ОСНОВНОЙ ЦИКЛ ====================
+# ==================== ЗАПУСК ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT 5.0 — С АВТОМАТИЧЕСКИМ FOOTPRINT И ВСЕМИ СТИЛЯМИ")
+print("🚀 SMC FULL BOT 6.0 — С FOOTPRINT, ВСЕМИ СТИЛЯМИ И АВТОУВЕДОМЛЕНИЯМИ")
 print("=" * 60)
 print(f"🏦 Текущая биржа: {router.current_name}")
 print("📡 Footprint: автоматически запускается для любых добавленных монет!")
-print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list")
+print("🔔 Автоуведомления: каждые 3 минуты проверяем сигналы")
+print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list, /notifications_on, /notifications_off")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
@@ -757,6 +862,10 @@ print("Ожидание сообщений...\n")
 for sym in ['BTC', 'ETH', 'SOL']:
     footprint_manager.start_for_symbol(sym)
 
+# Запускаем автоматические уведомления
+start_auto_notifications()
+
+# Основной цикл
 while True:
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
