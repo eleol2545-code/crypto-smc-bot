@@ -9,6 +9,8 @@ import threading
 import asyncio
 import websockets
 from datetime import datetime
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -461,10 +463,13 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
 
 # ==================== TELEGRAM БОТ ====================
 
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(url, json=payload, timeout=10)
     except:
         pass
 
@@ -506,21 +511,9 @@ def format_signal(symbol, analysis, style='day'):
         msg += f"\n\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"
         return msg
 
-def format_signal_compact(symbol, analysis, style_name):
-    if not analysis:
-        return f"❌ {style_name}: ошибка"
-    signal = analysis['signal']
-    price = analysis['price']
-    if signal:
-        emoji = "📈" if signal['signal'] == 'LONG' else "📉"
-        return f"{emoji} *{style_name}* {signal['signal']} | Увер: {signal['confidence']}% | R:R 1:{signal['rr']}\n   🚪 {format_price(signal['entry'])} | 🛑 {format_price(signal['sl'])} | 🎯 {format_price(signal['tp'])}"
-    else:
-        return f"⏳ *{style_name}* | Нет сигнала | Цена: {format_price(price)}"
-
 # ==================== АВТОМАТИЧЕСКИЕ УВЕДОМЛЕНИЯ ====================
 
 def check_signals_for_user(chat_id, user_data):
-    """Проверяет сигналы для пользователя и отправляет уведомления"""
     if not user_data.get('notifications_enabled', True):
         return
     
@@ -582,8 +575,6 @@ def check_signals_for_user(chat_id, user_data):
         time.sleep(0.5)
 
 def start_auto_notifications():
-    """Запускает фоновую проверку сигналов для всех пользователей"""
-    
     def notification_loop():
         print("🔄 Запущена фоновая проверка сигналов (каждые 3 минуты)")
         while True:
@@ -630,6 +621,8 @@ def handle_message(chat_id, text):
 /swing BTC — свинг-сигнал
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
+/style scalp|day|swing — сменить стиль
+/confidence 70 — мин. уверенность
 /notifications_on — включить автоуведомления
 /notifications_off — выключить автоуведомления
 /exchange — текущая биржа
@@ -779,6 +772,35 @@ def handle_message(chat_id, text):
         else:
             send_message(chat_id, "📡 Нет активных Footprint монет\nДобавьте монеты через `/add`")
     
+    elif text.startswith("/style"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/style scalp` (scalp/day/swing)")
+            return
+        new_style = parts[1].lower()
+        if new_style in ['scalp', 'day', 'swing']:
+            user_data['style'] = new_style
+            save_user_data(chat_id, user_data)
+            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()}")
+        else:
+            send_message(chat_id, "⚠️ Доступные стили: scalp, day, swing")
+    
+    elif text.startswith("/confidence"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/confidence 70`")
+            return
+        try:
+            val = int(parts[1])
+            if 50 <= val <= 90:
+                user_data['min_confidence'] = val
+                save_user_data(chat_id, user_data)
+                send_message(chat_id, f"✅ Мин. уверенность: {val}%")
+            else:
+                send_message(chat_id, "⚠️ Значение от 50 до 90")
+        except:
+            send_message(chat_id, "⚠️ Введите число")
+    
     elif text == "/notifications_on":
         user_data['notifications_enabled'] = True
         save_user_data(chat_id, user_data)
@@ -830,7 +852,9 @@ def handle_message(chat_id, text):
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
 
-📌 *Уведомления:*
+📌 *Настройки:*
+/style scalp|day|swing — сменить стиль
+/confidence 70 — мин. уверенность
 /notifications_on — включить автоуведомления
 /notifications_off — выключить автоуведомления
 
@@ -854,7 +878,7 @@ print("=" * 60)
 print(f"🏦 Текущая биржа: {router.current_name}")
 print("📡 Footprint: автоматически запускается для любых добавленных монет!")
 print("🔔 Автоуведомления: каждые 3 минуты проверяем сигналы")
-print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list, /notifications_on, /notifications_off")
+print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list, /style, /confidence, /notifications_on, /notifications_off, /exchange, /status, /help")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
