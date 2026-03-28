@@ -9,12 +9,17 @@ import threading
 import asyncio
 import websockets
 from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
+import io
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
 os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
+os.makedirs('data/charts', exist_ok=True)
 
 # ==================== ФУНКЦИЯ ФОРМАТИРОВАНИЯ ЦЕНЫ ====================
 
@@ -31,6 +36,190 @@ def format_price(price):
         return f"{price:.2f}"
     else:
         return f"{price:.0f}"
+
+# ==================== ГЕНЕРАЦИЯ ГРАФИКА С УРОВНЯМИ SMC ====================
+
+def generate_smc_chart(symbol, df, analysis, signal, style='day'):
+    """Генерирует график с уровнями SMC"""
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
+                                     gridspec_kw={'height_ratios': [3, 1]})
+    
+    # Берем последние 100 свечей
+    df_plot = df.tail(100)
+    dates = df_plot['timestamp']
+    closes = df_plot['close']
+    
+    # Рисуем свечи
+    for i, row in df_plot.iterrows():
+        color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
+        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], 
+                color=color, linewidth=0.8)
+        ax1.add_patch(Rectangle(
+            (row['timestamp'] - pd.Timedelta(minutes=30), row['open']),
+            pd.Timedelta(minutes=60), row['close'] - row['open'],
+            facecolor=color, alpha=0.7, linewidth=0
+        ))
+    
+    # Order Blocks
+    if 'bullish_ob' in df.columns:
+        for i in range(len(df_plot)):
+            if df_plot['bullish_ob'].iloc[i] == 1:
+                ob_high = df_plot['ob_high'].iloc[i]
+                ob_low = df_plot['ob_low'].iloc[i]
+                if ob_high and ob_low and not np.isnan(ob_high):
+                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='green')
+    
+    if 'bearish_ob' in df.columns:
+        for i in range(len(df_plot)):
+            if df_plot['bearish_ob'].iloc[i] == 1:
+                ob_high = df_plot['ob_high'].iloc[i]
+                ob_low = df_plot['ob_low'].iloc[i]
+                if ob_high and ob_low and not np.isnan(ob_high):
+                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='red')
+    
+    # POC
+    if analysis and analysis.get('poc'):
+        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', 
+                    linewidth=1.5, alpha=0.7, label=f'POC: {format_price(analysis["poc"])}')
+    
+    # Уровни поддержки/сопротивления
+    if analysis:
+        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', 
+                    linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
+        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', 
+                    linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
+    
+    # Уровни входа/выхода если есть сигнал
+    if signal:
+        entry = signal['entry']
+        sl = signal['sl']
+        tp = signal['tp']
+        color = 'green' if signal['signal'] == 'LONG' else 'red'
+        
+        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, 
+                    label=f'Entry: {format_price(entry)}')
+        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, 
+                    label=f'SL: {format_price(sl)}')
+        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, 
+                    label=f'TP: {format_price(tp)}')
+        
+        # Стрелка входа
+        last_date = df_plot['timestamp'].iloc[-1]
+        ax1.annotate('ВХОД', xy=(last_date, entry), 
+                    xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)),
+                    arrowprops=dict(arrowstyle='->', color=color, lw=2),
+                    fontsize=10, fontweight='bold', color=color)
+    
+    # Объем
+    colors = ['#00ff88' if close >= open else '#ff4444' 
+              for close, open in zip(df_plot['close'], df_plot['open'])]
+    ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
+    ax2.set_ylabel('Volume', color='white')
+    ax2.grid(True, alpha=0.2)
+    
+    # Настройка оформления
+    ax1.set_title(f'{symbol} | {style.upper()} | SMC Analysis', 
+                  fontsize=14, fontweight='bold', color='white')
+    ax1.set_ylabel('Price (USDT)', color='white')
+    ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
+    ax1.grid(True, alpha=0.2)
+    ax1.set_facecolor('#0a0a0a')
+    ax2.set_facecolor('#0a0a0a')
+    fig.patch.set_facecolor('#0a0a0a')
+    
+    # Форматирование дат
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    # Сохраняем в буфер
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
+    buf.seek(0)
+    plt.close()
+    
+    return buf
+
+# ==================== АНАЛИЗ СТАКАНА L2 ====================
+
+class OrderBookAnalyzer:
+    """Анализ стакана L2 — стены ликвидности"""
+    
+    def __init__(self):
+        self.exchange = None
+        self.current_exchange = None
+    
+    def set_exchange(self, exchange):
+        self.exchange = exchange
+    
+    def get_orderbook(self, symbol):
+        """Получает стакан L2"""
+        try:
+            orderbook = self.exchange.fetch_order_book(symbol, limit=20)
+            return orderbook
+        except Exception as e:
+            print(f"OrderBook error: {e}")
+            return None
+    
+    def analyze_liquidity_walls(self, orderbook):
+        """Анализирует стены ликвидности"""
+        if not orderbook:
+            return None
+        
+        # Анализируем биды (заявки на покупку)
+        bid_walls = []
+        for bid in orderbook['bids'][:10]:
+            price, quantity = bid
+            value = price * quantity
+            if value > 500_000:  # Заявка > $500k
+                bid_walls.append({
+                    'price': price,
+                    'quantity': quantity,
+                    'value_usdt': value,
+                    'type': 'BID'
+                })
+        
+        # Анализируем аски (заявки на продажу)
+        ask_walls = []
+        for ask in orderbook['asks'][:10]:
+            price, quantity = ask
+            value = price * quantity
+            if value > 500_000:
+                ask_walls.append({
+                    'price': price,
+                    'quantity': quantity,
+                    'value_usdt': value,
+                    'type': 'ASK'
+                })
+        
+        # Находим самую крупную стену
+        all_walls = bid_walls + ask_walls
+        if all_walls:
+            biggest_wall = max(all_walls, key=lambda x: x['value_usdt'])
+        else:
+            biggest_wall = None
+        
+        # Баланс стакана
+        total_bid_value = sum(w['value_usdt'] for w in bid_walls)
+        total_ask_value = sum(w['value_usdt'] for w in ask_walls)
+        
+        return {
+            'bid_walls': bid_walls[:5],
+            'ask_walls': ask_walls[:5],
+            'biggest_wall': biggest_wall,
+            'total_bid_value': total_bid_value,
+            'total_ask_value': total_ask_value,
+            'balance': total_bid_value - total_ask_value,
+            'dominant': 'BUYERS' if total_bid_value > total_ask_value else 'SELLERS'
+        }
+    
+    def detect_spoofing(self, orderbook, history):
+        """Обнаруживает спуфинг — крупные заявки, которые исчезают"""
+        # Упрощенная версия
+        return None
+
+orderbook_analyzer = OrderBookAnalyzer()
 
 # ==================== КЛАСТЕРНЫЙ АНАЛИЗ (FOOTPRINT) ====================
 
@@ -211,6 +400,9 @@ class SmartExchangeRouter:
                 self.current_name = config['name']
                 self.current_format = config['format']
                 break
+        
+        # Устанавливаем биржу для анализатора стакана
+        orderbook_analyzer.set_exchange(self.current_exchange)
     
     def format_symbol(self, symbol):
         symbol = symbol.upper().replace('USDT', '').replace('/', '')
@@ -234,10 +426,19 @@ class SmartExchangeRouter:
                         self.current_exchange = self.exchanges[name]
                         self.current_name = config['name']
                         self.current_format = config['format']
+                        orderbook_analyzer.set_exchange(self.current_exchange)
                         print(f"🔄 Переключено на {self.current_name}")
                         return self.fetch_ohlcv(symbol, timeframe, limit)
                     except:
                         continue
+            return None
+    
+    def get_orderbook(self, symbol):
+        try:
+            formatted = self.format_symbol(symbol)
+            return self.current_exchange.fetch_order_book(formatted, limit=20)
+        except Exception as e:
+            print(f"OrderBook error: {e}")
             return None
 
 router = SmartExchangeRouter()
@@ -445,6 +646,7 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
         ohlcv = router.fetch_ohlcv(symbol, '1h', 150)
         if not ohlcv: return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = calculate_indicators(df)
         df = find_order_blocks(df)
         poc = calculate_volume_profile(df)
@@ -453,7 +655,8 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
         return {
             'price': df['close'].iloc[-1], 'signal': signal, 'poc': poc,
             'support': df['low'].iloc[-20:].min(), 'resistance': df['high'].iloc[-20:].max(),
-            'exchange': router.current_name, 'footprint': footprint
+            'exchange': router.current_name, 'footprint': footprint,
+            'df': df
         }
     except Exception as e:
         print(f"Error for {symbol}: {e}")
@@ -470,6 +673,16 @@ def send_message(chat_id, text, reply_markup=None):
         requests.post(url, json=payload, timeout=10)
     except:
         pass
+
+def send_photo(chat_id, photo_buf, caption=""):
+    """Отправляет фото"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        files = {'photo': ('chart.png', photo_buf, 'image/png')}
+        data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
+        requests.post(url, files=files, data=data, timeout=10)
+    except Exception as e:
+        print(f"Photo error: {e}")
 
 def format_signal(symbol, analysis, style='day'):
     if not analysis: return f"❌ Ошибка получения данных для {symbol}"
@@ -602,6 +815,7 @@ def handle_message(chat_id, text):
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
 📡 *Footprint:* Delta, POC, кластеры объема (WebSocket)
+📊 *Стакан L2:* Стены ликвидности, крупные заявки
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
 🎯 *Стили:* SCALP, DAY, SWING
 
@@ -609,11 +823,13 @@ def handle_message(chat_id, text):
 🔄 *Текущая биржа:* {router.current_name}
 
 *Команды:*
-/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты (Footprint автоматически!)
+/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты
 /remove DOGE — удалить
 /list — мои монеты
-/signals — сигналы (ваш стиль: {user_data['style'].upper()})
+/signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
+/chart BTC — график с уровнями SMC
+/orderbook BTC — анализ стакана (стены ликвидности)
 /analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
@@ -712,6 +928,76 @@ def handle_message(chat_id, text):
             msg += "\n"
         
         send_message(chat_id, msg[:4000])
+    
+    # НОВАЯ КОМАНДА: ГРАФИК
+    elif text.startswith("/chart"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/chart BTC`")
+            return
+        symbol = parts[1].upper()
+        
+        send_message(chat_id, f"📊 *Генерирую график для {symbol}...*")
+        
+        analysis = get_full_analysis(symbol, user_data['style'], user_data['min_confidence'])
+        if analysis and analysis.get('df') is not None:
+            chart = generate_smc_chart(symbol, analysis['df'], analysis, analysis['signal'], user_data['style'])
+            caption = f"📈 *{symbol}* | {user_data['style'].upper()}\n💰 Цена: {format_price(analysis['price'])}"
+            if analysis['signal']:
+                caption += f"\n🎯 Сигнал: {analysis['signal']['signal']} | Увер: {analysis['signal']['confidence']}%"
+            send_photo(chat_id, chart, caption)
+        else:
+            send_message(chat_id, f"❌ Не удалось создать график для {symbol}")
+    
+    # НОВАЯ КОМАНДА: СТАКАН L2
+    elif text.startswith("/orderbook"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/orderbook BTC`")
+            return
+        symbol = parts[1].upper()
+        
+        send_message(chat_id, f"📚 *Анализ стакана для {symbol}...*")
+        
+        try:
+            orderbook = router.get_orderbook(symbol)
+            if orderbook:
+                analysis = orderbook_analyzer.analyze_liquidity_walls(orderbook)
+                
+                msg = f"""📚 *СТАКАН L2 | {symbol}*
+
+🏦 *Биржа:* {router.current_name}
+
+🟢 *КРУПНЫЕ ЗАЯВКИ НА ПОКУПКУ:*\n"""
+                for wall in analysis['bid_walls'][:3]:
+                    msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
+                if not analysis['bid_walls']:
+                    msg += "  • Нет крупных стен\n"
+                
+                msg += f"\n🔴 *КРУПНЫЕ ЗАЯВКИ НА ПРОДАЖУ:*\n"""
+                for wall in analysis['ask_walls'][:3]:
+                    msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
+                if not analysis['ask_walls']:
+                    msg += "  • Нет крупных стен\n"
+                
+                msg += f"\n📊 *ИТОГО:*\n"
+                msg += f"  • Объем покупок: ${analysis['total_bid_value']/1000:.0f}K\n"
+                msg += f"  • Объем продаж: ${analysis['total_ask_value']/1000:.0f}K\n"
+                msg += f"  • Баланс: {'+' if analysis['balance'] > 0 else ''}{analysis['balance']/1000:.0f}K\n"
+                msg += f"  • Доминируют: {analysis['dominant']}\n"
+                
+                if analysis['biggest_wall']:
+                    wall = analysis['biggest_wall']
+                    msg += f"\n🔥 *САМАЯ КРУПНАЯ СТЕНА:*\n"
+                    msg += f"  • Тип: {'ПОКУПКА' if wall['type'] == 'BID' else 'ПРОДАЖА'}\n"
+                    msg += f"  • Цена: ${format_price(wall['price'])}\n"
+                    msg += f"  • Объем: ${wall['value_usdt']/1000:.0f}K\n"
+                
+                send_message(chat_id, msg)
+            else:
+                send_message(chat_id, f"❌ Не удалось получить стакан для {symbol}")
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}")
     
     elif text.startswith("/analyze"):
         parts = text.split()
@@ -842,6 +1128,8 @@ def handle_message(chat_id, text):
 📌 *Сигналы:*
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
+/chart BTC — график с уровнями SMC
+/orderbook BTC — анализ стакана (стены ликвидности)
 /analyze PEPE — анализ любой
 /scalp BTC — скальп
 /swing BTC — свинг
@@ -871,12 +1159,13 @@ def handle_message(chat_id, text):
 # ==================== ЗАПУСК ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT 6.0 — С FOOTPRINT, ВСЕМИ СТИЛЯМИ И АВТОУВЕДОМЛЕНИЯМИ")
+print("🚀 SMC FULL BOT 7.0 — С ГРАФИКАМИ И СТАКАНОМ L2")
 print("=" * 60)
 print(f"🏦 Текущая биржа: {router.current_name}")
 print("📡 Footprint: автоматически запускается для любых добавленных монет!")
-print("🔔 Автоуведомления: каждые 3 минуты проверяем сигналы")
-print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list, /style, /confidence, /notifications_on, /notifications_off, /exchange, /status, /help")
+print("📊 Графики: /chart BTC")
+print("📚 Стакан L2: /orderbook BTC")
+print("🔔 Автоуведомления: каждые 3 минуты")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
