@@ -14,7 +14,7 @@ import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
 
-TELEGRAM_TOKEN = "7424012414:AAH_5-GVsX8-JMEXyN9w1VYIcK_1PInxiOI"
+TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
 os.makedirs('data', exist_ok=True)
