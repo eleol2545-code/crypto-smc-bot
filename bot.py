@@ -500,6 +500,20 @@ def format_signal(symbol, analysis, style='day'):
         msg += f"\n\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"
         return msg
 
+def format_signal_compact(symbol, analysis, style_name):
+    """Компактный формат для отображения в /all_signals"""
+    if not analysis:
+        return f"❌ {style_name}: ошибка"
+    
+    signal = analysis['signal']
+    price = analysis['price']
+    
+    if signal:
+        emoji = "📈" if signal['signal'] == 'LONG' else "📉"
+        return f"{emoji} *{style_name}* {signal['signal']} | Увер: {signal['confidence']}% | R:R 1:{signal['rr']}\n   🚪 {format_price(signal['entry'])} | 🛑 {format_price(signal['sl'])} | 🎯 {format_price(signal['tp'])}"
+    else:
+        return f"⏳ *{style_name}* | Нет сигнала | Цена: {format_price(price)}"
+
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
     user_data = get_user_data(chat_id)
@@ -519,7 +533,8 @@ def handle_message(chat_id, text):
 /add BTC,ETH,SOL,DOGE,PEPE — добавить монеты (Footprint автоматически!)
 /remove DOGE — удалить
 /list — мои монеты
-/signals — сигналы + Footprint
+/signals — сигналы (ваш стиль: {user_data['style'].upper()})
+/all_signals — сигналы по ВСЕМ стилям!
 /analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
@@ -567,6 +582,55 @@ def handle_message(chat_id, text):
         for sym in user_data['watchlist'][:5]:
             analysis = get_full_analysis(sym, user_data['style'], user_data['min_confidence'])
             msg += format_signal(sym, analysis, user_data['style']) + "\n\n"
+        send_message(chat_id, msg[:4000])
+    
+    elif text == "/all_signals":
+        if not user_data['watchlist']:
+            send_message(chat_id, "📭 Нет монет в списке")
+            return
+        
+        send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 Биржа: {router.current_name}")
+        
+        msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
+        
+        for sym in user_data['watchlist'][:5]:
+            msg += f"📊 *{sym}*\n"
+            
+            # SCALP
+            analysis_scalp = get_full_analysis(sym, 'scalp', 65)
+            if analysis_scalp and analysis_scalp['signal']:
+                s = analysis_scalp['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *SCALP* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_scalp['price'] if analysis_scalp else '?'
+                msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            # DAY
+            analysis_day = get_full_analysis(sym, 'day', 70)
+            if analysis_day and analysis_day['signal']:
+                s = analysis_day['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *DAY* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_day['price'] if analysis_day else '?'
+                msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            # SWING
+            analysis_swing = get_full_analysis(sym, 'swing', 75)
+            if analysis_swing and analysis_swing['signal']:
+                s = analysis_swing['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *SWING* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_swing['price'] if analysis_swing else '?'
+                msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            msg += "\n"
+        
         send_message(chat_id, msg[:4000])
     
     elif text.startswith("/analyze"):
@@ -656,10 +720,13 @@ def handle_message(chat_id, text):
 /list — мои монеты
 
 📌 *Сигналы:*
-/signals — сигналы + Footprint
+/signals — сигналы (ваш стиль)
+/all_signals — сигналы по ВСЕМ стилям!
 /analyze PEPE — анализ любой
 /scalp BTC — скальп
 /swing BTC — свинг
+
+📌 *Footprint:*
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
 
@@ -678,11 +745,11 @@ def handle_message(chat_id, text):
 # ==================== ОСНОВНОЙ ЦИКЛ ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT 5.0 — С АВТОМАТИЧЕСКИМ FOOTPRINT")
+print("🚀 SMC FULL BOT 5.0 — С АВТОМАТИЧЕСКИМ FOOTPRINT И ВСЕМИ СТИЛЯМИ")
 print("=" * 60)
 print(f"🏦 Текущая биржа: {router.current_name}")
 print("📡 Footprint: автоматически запускается для любых добавленных монет!")
-print("📊 Команды: /add, /remove, /list, /signals, /analyze, /scalp, /swing, /footprint, /footprint_list")
+print("📊 Команды: /add, /remove, /list, /signals, /all_signals, /analyze, /scalp, /swing, /footprint, /footprint_list")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
