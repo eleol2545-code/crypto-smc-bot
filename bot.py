@@ -14,8 +14,6 @@ import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
 import random
-import socks
-import socket
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -31,7 +29,6 @@ GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
 GLOBAL_TRADES_FILE = 'data/global_trades.json'
 
 def get_global_watchlist():
-    """Получает общий список монет для всех пользователей"""
     if os.path.exists(GLOBAL_WATCHLIST_FILE):
         with open(GLOBAL_WATCHLIST_FILE, 'r') as f:
             data = json.load(f)
@@ -39,34 +36,28 @@ def get_global_watchlist():
     return ['BTC', 'ETH', 'SOL']
 
 def save_global_watchlist(watchlist):
-    """Сохраняет общий список монет"""
     with open(GLOBAL_WATCHLIST_FILE, 'w') as f:
         json.dump({'watchlist': watchlist}, f, indent=2)
 
 def get_global_settings():
-    """Получает общие настройки"""
     if os.path.exists(GLOBAL_SETTINGS_FILE):
         with open(GLOBAL_SETTINGS_FILE, 'r') as f:
             return json.load(f)
     return {'style': 'day', 'min_confidence': 70, 'notifications_enabled': True}
 
 def save_global_settings(settings):
-    """Сохраняет общие настройки"""
     with open(GLOBAL_SETTINGS_FILE, 'w') as f:
         json.dump(settings, f, indent=2)
 
-# ==================== УПРАВЛЕНИЕ СДЕЛКАМИ (ГЛОБАЛЬНОЕ) ====================
+# ==================== УПРАВЛЕНИЕ СДЕЛКАМИ ====================
 
 class GlobalTradeManager:
-    """Управление сделками для всех пользователей (общее)"""
-    
     def __init__(self):
         self.active_trades = {}
         self.trade_counter = 1
         self.load_trades()
     
     def load_trades(self):
-        """Загружает сделки из файла"""
         if os.path.exists(GLOBAL_TRADES_FILE):
             with open(GLOBAL_TRADES_FILE, 'r') as f:
                 data = json.load(f)
@@ -74,92 +65,66 @@ class GlobalTradeManager:
                 self.trade_counter = data.get('counter', 1)
     
     def save_trades(self):
-        """Сохраняет сделки в файл"""
         with open(GLOBAL_TRADES_FILE, 'w') as f:
             json.dump({'active': self.active_trades, 'counter': self.trade_counter}, f, indent=2)
     
     def get_next_id(self):
-        """Получает следующий ID для сделки"""
         current = self.trade_counter
         self.trade_counter += 1
         self.save_trades()
         return current
     
     def add_trade(self, symbol, side, entry_price, size=1, leverage=1, tp=None, sl=None):
-        """Добавляет новую сделку"""
         trade_id = self.get_next_id()
         trade = {
-            'id': trade_id,
-            'symbol': symbol,
-            'side': side,
-            'entry': entry_price,
-            'size': size,
-            'leverage': leverage,
-            'tp': tp,
-            'sl': sl,
-            'open_time': datetime.now().isoformat(),
-            'status': 'open'
+            'id': trade_id, 'symbol': symbol, 'side': side, 'entry': entry_price,
+            'size': size, 'leverage': leverage, 'tp': tp, 'sl': sl,
+            'open_time': datetime.now().isoformat(), 'status': 'open'
         }
         self.active_trades[str(trade_id)] = trade
         self.save_trades()
         return trade_id
     
     def close_trade(self, trade_id, exit_price):
-        """Закрывает сделку"""
         trade_id = str(trade_id)
         if trade_id not in self.active_trades:
             return None
-        
         trade = self.active_trades[trade_id]
-        
-        # Расчет с учетом плеча
         if trade['side'] == 'LONG':
             pnl_pct = (exit_price - trade['entry']) / trade['entry'] * 100 * trade['leverage']
             pnl_usdt = trade['size'] * (exit_price - trade['entry']) / trade['entry'] * trade['leverage']
         else:
             pnl_pct = (trade['entry'] - exit_price) / trade['entry'] * 100 * trade['leverage']
             pnl_usdt = trade['size'] * (trade['entry'] - exit_price) / trade['entry'] * trade['leverage']
-        
         trade['exit'] = exit_price
         trade['exit_time'] = datetime.now().isoformat()
         trade['pnl_pct'] = round(pnl_pct, 2)
         trade['pnl_usdt'] = round(pnl_usdt, 2)
         trade['status'] = 'closed'
-        
-        # Сохраняем в историю
         history_file = 'data/trades_history.json'
         history = []
         if os.path.exists(history_file):
             with open(history_file, 'r') as f:
                 history = json.load(f)
-        
         history.append(trade)
         with open(history_file, 'w') as f:
             json.dump(history, f, indent=2)
-        
-        # Удаляем из активных
         del self.active_trades[trade_id]
         self.save_trades()
-        
         return trade
     
     def reset_all_trades(self):
-        """Сбрасывает все сделки (очищает историю и активные)"""
         self.active_trades = {}
         self.trade_counter = 1
         self.save_trades()
-        
         if os.path.exists('data/trades_history.json'):
             os.remove('data/trades_history.json')
-        
         return True
     
     def get_active_trades(self):
-        """Возвращает активные сделки"""
         return self.active_trades
     
     def get_history(self, limit=20):
-        """Возвращает историю сделок"""
         history_file = 'data/trades_history.json'
         if os.path.exists(history_file):
             with open(history_file, 'r') as f:
@@ -168,36 +133,21 @@ class GlobalTradeManager:
         return []
     
     def get_stats(self):
-        """Возвращает статистику по сделкам"""
         history = self.get_history(1000)
-        
         if not history:
-            return {
-                'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
-                'total_pnl_pct': 0, 'total_pnl_usdt': 0,
-                'avg_win': 0, 'avg_loss': 0, 'profit_factor': 0,
-                'best_trade': 0, 'worst_trade': 0
-            }
-        
+            return {'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0, 'total_pnl_pct': 0, 'total_pnl_usdt': 0, 'avg_win': 0, 'avg_loss': 0, 'profit_factor': 0, 'best_trade': 0, 'worst_trade': 0}
         wins = [t for t in history if t['pnl_pct'] > 0]
         losses = [t for t in history if t['pnl_pct'] <= 0]
-        
         total_pnl_pct = sum(t['pnl_pct'] for t in history)
         total_pnl_usdt = sum(t['pnl_usdt'] for t in history)
-        
         avg_win = sum(t['pnl_pct'] for t in wins) / len(wins) if wins else 0
         avg_loss = sum(t['pnl_pct'] for t in losses) / len(losses) if losses else 0
-        
         profit_factor = abs(sum(t['pnl_usdt'] for t in wins) / sum(t['pnl_usdt'] for t in losses)) if losses and sum(t['pnl_usdt'] for t in losses) != 0 else 0
-        
         return {
             'total_trades': len(history), 'wins': len(wins), 'losses': len(losses),
             'win_rate': round(len(wins) / len(history) * 100, 2) if history else 0,
-            'total_pnl_pct': round(total_pnl_pct, 2),
-            'total_pnl_usdt': round(total_pnl_usdt, 2),
-            'avg_win': round(avg_win, 2),
-            'avg_loss': round(avg_loss, 2),
-            'profit_factor': round(profit_factor, 2),
+            'total_pnl_pct': round(total_pnl_pct, 2), 'total_pnl_usdt': round(total_pnl_usdt, 2),
+            'avg_win': round(avg_win, 2), 'avg_loss': round(avg_loss, 2), 'profit_factor': round(profit_factor, 2),
             'best_trade': max([t['pnl_pct'] for t in history]) if history else 0,
             'worst_trade': min([t['pnl_pct'] for t in history]) if history else 0
         }
@@ -220,26 +170,17 @@ def format_price(price):
     else:
         return f"{price:.0f}"
 
-# ==================== ГЕНЕРАЦИЯ ГРАФИКА С УРОВНЯМИ SMC ====================
+# ==================== ГЕНЕРАЦИЯ ГРАФИКА ====================
 
 def generate_smc_chart(symbol, df, analysis, signal, style='day'):
-    """Генерирует график с уровнями SMC"""
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
-                                     gridspec_kw={'height_ratios': [3, 1]})
-    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     df_plot = df.tail(100)
     dates = df_plot['timestamp']
     
     for i, row in df_plot.iterrows():
         color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
-        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], 
-                color=color, linewidth=0.8)
-        ax1.add_patch(Rectangle(
-            (row['timestamp'] - pd.Timedelta(minutes=30), row['open']),
-            pd.Timedelta(minutes=60), row['close'] - row['open'],
-            facecolor=color, alpha=0.7, linewidth=0
-        ))
+        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=0.8)
+        ax1.add_patch(Rectangle((row['timestamp'] - pd.Timedelta(minutes=30), row['open']), pd.Timedelta(minutes=60), row['close'] - row['open'], facecolor=color, alpha=0.7, linewidth=0))
     
     if 'bullish_ob' in df.columns:
         for i in range(len(df_plot)):
@@ -258,42 +199,28 @@ def generate_smc_chart(symbol, df, analysis, signal, style='day'):
                     ax1.axhspan(ob_low, ob_high, alpha=0.2, color='red')
     
     if analysis and analysis.get('poc'):
-        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', 
-                    linewidth=1.5, alpha=0.7, label=f'POC: {format_price(analysis["poc"])}')
-    
+        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', linewidth=1.5, alpha=0.7, label=f'POC: {format_price(analysis["poc"])}')
     if analysis:
-        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', 
-                    linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
-        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', 
-                    linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
+        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
+        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
     
     if signal:
         entry = signal['entry']
         sl = signal['sl']
         tp = signal['tp']
         color = 'green' if signal['signal'] == 'LONG' else 'red'
-        
-        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, 
-                    label=f'Entry: {format_price(entry)}')
-        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, 
-                    label=f'SL: {format_price(sl)}')
-        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, 
-                    label=f'TP: {format_price(tp)}')
-        
+        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, label=f'Entry: {format_price(entry)}')
+        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, label=f'SL: {format_price(sl)}')
+        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, label=f'TP: {format_price(tp)}')
         last_date = df_plot['timestamp'].iloc[-1]
-        ax1.annotate('ВХОД', xy=(last_date, entry), 
-                    xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)),
-                    arrowprops=dict(arrowstyle='->', color=color, lw=2),
-                    fontsize=10, fontweight='bold', color=color)
+        ax1.annotate('ВХОД', xy=(last_date, entry), xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)), arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
     
-    colors = ['#00ff88' if close >= open else '#ff4444' 
-              for close, open in zip(df_plot['close'], df_plot['open'])]
+    colors = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df_plot['close'], df_plot['open'])]
     ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
     ax2.set_ylabel('Volume', color='white')
     ax2.grid(True, alpha=0.2)
     
-    ax1.set_title(f'{symbol} | {style.upper()} | SMC Analysis', 
-                  fontsize=14, fontweight='bold', color='white')
+    ax1.set_title(f'{symbol} | {style.upper()} | SMC Analysis', fontsize=14, fontweight='bold', color='white')
     ax1.set_ylabel('Price (USDT)', color='white')
     ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
     ax1.grid(True, alpha=0.2)
@@ -309,10 +236,9 @@ def generate_smc_chart(symbol, df, analysis, signal, style='day'):
     plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
     buf.seek(0)
     plt.close()
-    
     return buf
 
-# ==================== АНАЛИЗ СТАКАНА L2 ====================
+# ==================== АНАЛИЗ СТАКАНА ====================
 
 class OrderBookAnalyzer:
     def __init__(self):
@@ -324,34 +250,28 @@ class OrderBookAnalyzer:
     def get_orderbook(self, symbol):
         try:
             return self.exchange.fetch_order_book(symbol, limit=20)
-        except Exception as e:
-            print(f"OrderBook error: {e}")
+        except:
             return None
     
     def analyze_liquidity_walls(self, orderbook):
         if not orderbook:
             return None
-        
         bid_walls = []
         for bid in orderbook['bids'][:10]:
             price, quantity = bid
             value = price * quantity
             if value > 500_000:
                 bid_walls.append({'price': price, 'quantity': quantity, 'value_usdt': value, 'type': 'BID'})
-        
         ask_walls = []
         for ask in orderbook['asks'][:10]:
             price, quantity = ask
             value = price * quantity
             if value > 500_000:
                 ask_walls.append({'price': price, 'quantity': quantity, 'value_usdt': value, 'type': 'ASK'})
-        
         all_walls = bid_walls + ask_walls
         biggest_wall = max(all_walls, key=lambda x: x['value_usdt']) if all_walls else None
-        
         total_bid_value = sum(w['value_usdt'] for w in bid_walls)
         total_ask_value = sum(w['value_usdt'] for w in ask_walls)
-        
         return {
             'bid_walls': bid_walls[:5], 'ask_walls': ask_walls[:5], 'biggest_wall': biggest_wall,
             'total_bid_value': total_bid_value, 'total_ask_value': total_ask_value,
@@ -361,14 +281,13 @@ class OrderBookAnalyzer:
 
 orderbook_analyzer = OrderBookAnalyzer()
 
-# ==================== КЛАСТЕРНЫЙ АНАЛИЗ (FOOTPRINT) ====================
+# ==================== FOOTPRINT ====================
 
 class FootprintAnalyzer:
     def __init__(self, symbol='BTCUSDT'):
         self.symbol = symbol
         self.trades = []
         self.delta = 0
-        self.delta_history = []
         self.price_clusters = {}
         self.last_poc = None
         self.buy_volume = 0
@@ -380,7 +299,6 @@ class FootprintAnalyzer:
         self.running = True
         self.ws_thread = threading.Thread(target=self._run_websocket, daemon=True)
         self.ws_thread.start()
-        print(f"📡 Footprint WebSocket запущен для {self.symbol}")
     
     def _run_websocket(self):
         asyncio.run(self._connect_websocket())
@@ -391,13 +309,11 @@ class FootprintAnalyzer:
             async with websockets.connect(url) as ws:
                 subscribe_msg = {"op": "subscribe", "args": [f"publicTrade.{self.symbol}"]}
                 await ws.send(json.dumps(subscribe_msg))
-                print(f"✅ WebSocket подключен для {self.symbol}")
                 async for message in ws:
                     data = json.loads(message)
                     if 'topic' in data and 'publicTrade' in data['topic']:
                         await self._process_trades(data['data'])
-        except Exception as e:
-            print(f"❌ WebSocket ошибка для {self.symbol}: {e}")
+        except:
             time.sleep(5)
             if self.running:
                 await self._connect_websocket()
@@ -407,18 +323,15 @@ class FootprintAnalyzer:
             price = float(trade['p'])
             volume = float(trade['v'])
             side = 'BUY' if trade['S'] == 'Buy' else 'SELL'
-            
             if side == 'BUY':
                 self.delta += volume
                 self.buy_volume += volume
             else:
                 self.delta -= volume
                 self.sell_volume += volume
-            
             self.trades.append({'time': trade['T'], 'price': price, 'volume': volume, 'side': side})
             if len(self.trades) > 10000:
                 self.trades = self.trades[-5000:]
-            
             price_level = round(price, 2) if price > 1 else round(price, 6)
             if price_level not in self.price_clusters:
                 self.price_clusters[price_level] = {'buy': 0, 'sell': 0, 'total': 0}
@@ -427,13 +340,8 @@ class FootprintAnalyzer:
             else:
                 self.price_clusters[price_level]['sell'] += volume
             self.price_clusters[price_level]['total'] += volume
-            
             if len(self.trades) % 100 == 0:
                 self._update_poc()
-            
-            self.delta_history.append({'time': datetime.now().isoformat(), 'delta': self.delta, 'price': price})
-            if len(self.delta_history) > 1000:
-                self.delta_history = self.delta_history[-500:]
     
     def _update_poc(self):
         if not self.price_clusters:
@@ -473,9 +381,8 @@ class FootprintManager:
             analyzer.start()
             self.analyzers[symbol_clean] = analyzer
             self.active_symbols.add(symbol_clean)
-            print(f"✅ Footprint запущен для {symbol_clean}")
-        except Exception as e:
-            print(f"❌ Ошибка запуска Footprint для {symbol_clean}: {e}")
+        except:
+            pass
     
     def stop_for_symbol(self, symbol):
         symbol_clean = symbol.upper().replace('USDT', '').replace('/', '')
@@ -483,7 +390,6 @@ class FootprintManager:
             self.analyzers[symbol_clean].stop()
             del self.analyzers[symbol_clean]
             self.active_symbols.discard(symbol_clean)
-            print(f"⏸️ Footprint остановлен для {symbol_clean}")
     
     def get_footprint(self, symbol):
         symbol_clean = symbol.upper().replace('USDT', '').replace('/', '')
@@ -502,99 +408,37 @@ class FootprintManager:
 
 footprint_manager = FootprintManager()
 
-# ==================== МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР С ПРОКСИ ====================
+# ==================== МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР ====================
 
 class MultiExchangeAggregator:
-    """Агрегирует данные со всех бирж с поддержкой прокси"""
-    
     def __init__(self):
         self.exchanges = {}
         self.exchange_names = []
         self.data = {}
-        self.current_proxy = None
-        self.failed_exchanges = {}
         self.init_exchanges()
     
-    def get_working_proxy(self):
-        """Пытается найти рабочий прокси"""
-        proxy_list = [
-            'socks5://45.94.31.77:1080',
-            'socks5://45.94.31.78:1080',
-            'http://45.94.31.77:8080',
-            'http://45.94.31.78:8080',
-        ]
-        
-        for proxy in proxy_list:
-            try:
-                import requests
-                response = requests.get('https://api.ipify.org', proxies={'http': proxy, 'https': proxy}, timeout=5)
-                if response.status_code == 200:
-                    print(f"✅ Найден рабочий прокси: {proxy}")
-                    return proxy
-            except:
-                continue
-        
-        print("⚠️ Не удалось найти рабочий прокси, работаем без прокси")
-        return None
-    
-    def set_proxy(self, proxy):
-        """Устанавливает прокси для всех бирж"""
-        if not proxy:
-            return
-        
-        self.current_proxy = proxy
-        print(f"🔄 Установлен прокси: {proxy}")
-        
-        # Пересоздаем биржи с прокси
-        self.init_exchanges(with_proxy=True)
-    
-    def init_exchanges(self, with_proxy=False):
-        """Инициализирует все биржи"""
+    def init_exchanges(self):
         exchanges_config = [
-            {'name': 'Binance', 'class': ccxt.binance, 'params': {'options': {'defaultType': 'future'}}, 'format': 'BTC/USDT', 'active': True},
-            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT', 'active': True},
-            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT', 'active': True},
-            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT', 'active': True},
-            {'name': 'OKX', 'class': ccxt.okx, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC-USDT-SWAP', 'active': True},
+            {'name': 'Binance', 'class': ccxt.binance, 'params': {'options': {'defaultType': 'future'}}, 'format': 'BTC/USDT'},
+            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT'},
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT'},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT'},
+            {'name': 'OKX', 'class': ccxt.okx, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC-USDT-SWAP'},
         ]
-        
-        self.exchanges = {}
-        self.exchange_names = []
-        
         for config in exchanges_config:
             try:
                 exchange = config['class'](config['params'])
                 exchange.enableRateLimit = True
-                
-                if with_proxy and self.current_proxy:
-                    exchange.http_proxy = self.current_proxy
-                    exchange.https_proxy = self.current_proxy
-                
-                # Тестируем подключение
-                test_symbol = self.format_symbol_for_exchange(config['name'], 'BTC/USDT')
-                exchange.fetch_ticker(test_symbol)
-                
                 self.exchanges[config['name']] = exchange
                 self.exchange_names.append(config['name'])
-                self.data[config['name']] = {
-                    'price': None, 'volume_24h': None, 'active': True, 
-                    'format': config['format'], 'blocked': False
-                }
+                self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': True, 'format': config['format']}
                 print(f"✅ Агрегатор: инициализирована {config['name']}")
-                
             except Exception as e:
-                error_msg = str(e).lower()
-                if 'restricted' in error_msg or 'blocked' in error_msg or '451' in error_msg:
-                    print(f"❌ {config['name']} заблокирована в РФ")
-                    self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False, 'blocked': True}
-                else:
-                    print(f"❌ Агрегатор: ошибка {config['name']}: {e}")
-                    self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False, 'error': str(e)}
+                print(f"❌ Ошибка {config['name']}: {e}")
+                self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False}
     
     def format_symbol_for_exchange(self, exchange_name, symbol):
-        """Форматирует символ под конкретную биржу"""
         symbol_clean = symbol.upper().replace('/USDT', '').replace('USDT', '').replace('/', '')
-        
         if exchange_name == 'Binance':
             return f"{symbol_clean}/USDT"
         elif exchange_name == 'Bybit':
@@ -608,123 +452,69 @@ class MultiExchangeAggregator:
         return f"{symbol_clean}/USDT"
     
     def fetch_all_data(self, symbol='BTC/USDT'):
-        """Получает данные со всех бирж"""
         results = []
-        
         for name, exchange in self.exchanges.items():
             try:
                 sym = self.format_symbol_for_exchange(name, symbol)
                 ticker = exchange.fetch_ticker(sym)
-                
                 volume_24h = ticker.get('quoteVolume', ticker.get('baseVolume', 0))
-                
                 results.append({
-                    'exchange': name,
-                    'price': ticker['last'],
-                    'volume_24h': volume_24h,
-                    'bid': ticker['bid'],
-                    'ask': ticker['ask'],
-                    'change': ticker.get('percentage', 0),
-                    'active': True,
-                    'timestamp': datetime.now().isoformat()
+                    'exchange': name, 'price': ticker['last'], 'volume_24h': volume_24h,
+                    'bid': ticker['bid'], 'ask': ticker['ask'], 'change': ticker.get('percentage', 0),
+                    'active': True
                 })
-                
                 self.data[name]['price'] = ticker['last']
                 self.data[name]['volume_24h'] = volume_24h
                 self.data[name]['active'] = True
-                
             except Exception as e:
-                error_msg = str(e).lower()
-                print(f"❌ Ошибка {name}: {e}")
-                
                 self.data[name]['active'] = False
-                results.append({
-                    'exchange': name,
-                    'price': None,
-                    'volume_24h': 0,
-                    'active': False,
-                    'error': str(e)[:50],
-                    'blocked': 'restricted' in error_msg or 'blocked' in error_msg
-                })
-        
+                results.append({'exchange': name, 'price': None, 'volume_24h': 0, 'active': False, 'error': str(e)[:50]})
         return results
     
     def get_aggregated_data(self, symbol='BTC/USDT'):
-        """Возвращает агрегированные данные"""
         results = self.fetch_all_data(symbol)
-        
         active_results = [r for r in results if r.get('price') and r.get('active')]
-        
         if not active_results:
-            return {
-                'symbol': symbol,
-                'status': 'Нет доступных бирж',
-                'exchanges': results,
-                'working_count': 0,
-                'total_count': len(results)
-            }
-        
+            return {'symbol': symbol, 'status': 'Нет доступных бирж', 'exchanges': results, 'working_count': 0, 'total_count': len(results)}
         total_volume = sum(r['volume_24h'] for r in active_results)
         if total_volume > 0:
             weighted_price = sum(r['price'] * r['volume_24h'] for r in active_results) / total_volume
         else:
             weighted_price = sum(r['price'] for r in active_results) / len(active_results)
-        
         avg_price = sum(r['price'] for r in active_results) / len(active_results)
         prices = [r['price'] for r in active_results]
         price_spread = max(prices) - min(prices)
         price_spread_pct = (price_spread / avg_price) * 100 if avg_price > 0 else 0
-        
         total_volume_24h = total_volume
         most_active = max(active_results, key=lambda x: x['volume_24h']) if active_results else None
-        
         divergence = None
         if price_spread_pct > 0.5:
             divergence = f"⚠️ Расхождение между биржами: {price_spread_pct:.2f}%"
-        
         changes = [r['change'] for r in active_results if r.get('change') is not None]
         if len(changes) >= 3:
             positive = sum(1 for c in changes if c > 0)
             negative = sum(1 for c in changes if c < 0)
             if positive == len(changes):
                 consensus = "🟢 ВСЕ БИРЖИ ВВЕРХ"
-                consensus_signal = "BULLISH"
             elif negative == len(changes):
                 consensus = "🔴 ВСЕ БИРЖИ ВНИЗ"
-                consensus_signal = "BEARISH"
             else:
                 consensus = "🟡 РАЗНОНАПРАВЛЕННО"
-                consensus_signal = "NEUTRAL"
         else:
             consensus = "⚪ НЕДОСТАТОЧНО ДАННЫХ"
-            consensus_signal = "NEUTRAL"
-        
         working_exchanges = [r for r in results if r.get('active')]
-        blocked_exchanges = [r for r in results if r.get('blocked')]
-        
         return {
-            'symbol': symbol,
-            'weighted_price': weighted_price,
-            'avg_price': avg_price,
-            'price_spread': price_spread,
-            'price_spread_pct': price_spread_pct,
-            'total_volume_24h': total_volume_24h,
-            'most_active': most_active['exchange'] if most_active else None,
-            'divergence': divergence,
-            'consensus': consensus,
-            'consensus_signal': consensus_signal,
-            'exchanges': results,
-            'working_exchanges': [r['exchange'] for r in working_exchanges],
-            'blocked_exchanges': [r['exchange'] for r in blocked_exchanges if r.get('blocked')],
-            'working_count': len(working_exchanges),
-            'total_count': len(results),
-            'timestamp': datetime.now().isoformat()
+            'symbol': symbol, 'weighted_price': weighted_price, 'avg_price': avg_price,
+            'price_spread': price_spread, 'price_spread_pct': price_spread_pct,
+            'total_volume_24h': total_volume_24h, 'most_active': most_active['exchange'] if most_active else None,
+            'divergence': divergence, 'consensus': consensus, 'exchanges': results,
+            'working_exchanges': [r['exchange'] for r in working_exchanges], 'working_count': len(working_exchanges),
+            'total_count': len(results), 'timestamp': datetime.now().isoformat()
         }
 
-# Создаем глобальный агрегатор
 aggregator = MultiExchangeAggregator()
 
-# ==================== РОУТЕР ДЛЯ ОСНОВНОГО АНАЛИЗА ====================
+# ==================== РОУТЕР ДЛЯ АНАЛИЗА ====================
 
 class SmartExchangeRouter:
     def __init__(self):
@@ -736,28 +526,24 @@ class SmartExchangeRouter:
     
     def initialize_exchanges(self):
         exchanges_config = [
-            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT', 'active': True},
-            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT', 'active': True},
-            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT', 'active': True},
+            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT'},
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT'},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT'},
         ]
-        
         for config in exchanges_config:
             try:
                 exchange = config['class'](config['params'])
                 exchange.enableRateLimit = True
                 self.exchanges[config['name']] = exchange
                 print(f"✅ Инициализирована {config['name']}")
-            except Exception as e:
-                print(f"❌ Ошибка {config['name']}: {e}")
-                config['active'] = False
-        
+            except:
+                pass
         for name, config in [('Bybit', {'format': 'BTCUSDT'}), ('KuCoin', {'format': 'BTC/USDT'}), ('Gate.io', {'format': 'BTC_USDT'})]:
             if name in self.exchanges:
                 self.current_exchange = self.exchanges[name]
                 self.current_name = name
                 self.current_format = config['format']
                 break
-        
         orderbook_analyzer.set_exchange(self.current_exchange)
     
     def format_symbol(self, symbol):
@@ -775,7 +561,6 @@ class SmartExchangeRouter:
             formatted = self.format_symbol(symbol)
             return self.current_exchange.fetch_ohlcv(formatted, timeframe, limit=limit)
         except Exception as e:
-            print(f"❌ Ошибка на {self.current_name}: {e}")
             for name, exchange in self.exchanges.items():
                 if name != self.current_name:
                     try:
@@ -788,7 +573,6 @@ class SmartExchangeRouter:
                         else:
                             self.current_format = 'BTC_USDT'
                         orderbook_analyzer.set_exchange(self.current_exchange)
-                        print(f"🔄 Переключено на {self.current_name}")
                         return self.fetch_ohlcv(symbol, timeframe, limit)
                     except:
                         continue
@@ -796,7 +580,7 @@ class SmartExchangeRouter:
 
 router = SmartExchangeRouter()
 
-# ==================== SMC АНАЛИЗАТОР ====================
+# ==================== SMC АНАЛИЗ ====================
 
 def calculate_indicators(df):
     delta = df['close'].diff()
@@ -827,7 +611,6 @@ def calculate_indicators(df):
     
     df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
     df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
-    
     df['volume_sma'] = df['volume'].rolling(window=20).mean()
     df['volume_ratio'] = df['volume'] / df['volume_sma']
     return df
@@ -879,15 +662,9 @@ def calculate_volume_profile(df, bars=50):
 def generate_signal(df, style='day', min_confidence=70, footprint_data=None):
     if df is None or len(df) < 50:
         return None
-    
     current = df.iloc[-1]
-    params = {
-        'scalp': {'sl_pct': 0.008, 'tp_pct': 0.015, 'min_conf': 65},
-        'day': {'sl_pct': 0.015, 'tp_pct': 0.03, 'min_conf': 70},
-        'swing': {'sl_pct': 0.025, 'tp_pct': 0.06, 'min_conf': 75}
-    }
+    params = {'scalp': {'sl_pct': 0.008, 'tp_pct': 0.015, 'min_conf': 65}, 'day': {'sl_pct': 0.015, 'tp_pct': 0.03, 'min_conf': 70}, 'swing': {'sl_pct': 0.025, 'tp_pct': 0.06, 'min_conf': 75}}
     p = params.get(style, params['day'])
-    
     score = 0
     signal_type = None
     reasons = []
@@ -988,7 +765,6 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
             'exchange': router.current_name, 'footprint': footprint, 'df': df
         }
     except Exception as e:
-        print(f"Error for {symbol}: {e}")
         return None
 
 # ==================== TELEGRAM БОТ ====================
@@ -1009,8 +785,8 @@ def send_photo(chat_id, photo_buf, caption=""):
         files = {'photo': ('chart.png', photo_buf, 'image/png')}
         data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
         requests.post(url, files=files, data=data, timeout=10)
-    except Exception as e:
-        print(f"Photo error: {e}")
+    except:
+        pass
 
 def format_signal(symbol, analysis, style='day'):
     if not analysis: return f"❌ Ошибка получения данных для {symbol}"
@@ -1051,31 +827,24 @@ def format_signal(symbol, analysis, style='day'):
         return msg
 
 def check_signals_for_all():
-    """Проверяет сигналы для всех (глобально)"""
     settings = get_global_settings()
     if not settings.get('notifications_enabled', True):
         return
-    
     watchlist = get_global_watchlist()
     if not watchlist:
         return
-    
     new_signals = []
-    
     for sym in watchlist[:5]:
         for style, min_conf in [('scalp', 65), ('day', 70), ('swing', 75)]:
             analysis = get_full_analysis(sym, style, min_conf)
-            
             if analysis and analysis['signal']:
                 signal = analysis['signal']
                 signal_key = f"{sym}_{style}_{signal['signal']}_{int(signal['entry'])}"
-                
                 sent_file = 'data/sent_signals.json'
                 sent_signals = []
                 if os.path.exists(sent_file):
                     with open(sent_file, 'r') as f:
                         sent_signals = json.load(f)
-                
                 if signal_key not in sent_signals:
                     new_signals.append((sym, style, analysis, signal))
                     sent_signals.append(signal_key)
@@ -1083,7 +852,6 @@ def check_signals_for_all():
                         sent_signals = sent_signals[-100:]
                     with open(sent_file, 'w') as f:
                         json.dump(sent_signals, f)
-    
     for sym, style, analysis, signal in new_signals:
         print(f"🔔 НОВЫЙ СИГНАЛ: {sym} {signal['signal']} {style}")
 
@@ -1097,7 +865,6 @@ def start_auto_notifications():
             except Exception as e:
                 print(f"Ошибка в уведомлениях: {e}")
                 time.sleep(60)
-    
     notification_thread = threading.Thread(target=notification_loop, daemon=True)
     notification_thread.start()
 
@@ -1112,17 +879,17 @@ def handle_message(chat_id, text):
         send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — МУЛЬТИБИРЖЕВАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
-📡 *Footprint:* Delta, POC, кластеры объема (WebSocket)
-📊 *Стакан L2:* Стены ликвидности, крупные заявки
+📡 *Footprint:* Delta, POC, кластеры объема
+📊 *Стакан L2:* Стены ликвидности
 🏦 *Мультибиржевой агрегатор:* Binance, Bybit, KuCoin, Gate.io, OKX
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
 🎯 *Стили:* SCALP, DAY, SWING
 
-🌍 *ГЛОБАЛЬНЫЙ РЕЖИМ:* Все пользователи видят одни и те же монеты и сделки!
+🌍 *ГЛОБАЛЬНЫЙ РЕЖИМ:* Все пользователи видят одни и те же монеты!
 
 *Команды:*
-/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты (для всех!)
-/remove DOGE — удалить (для всех!)
+/add BTC,ETH,SOL,DOGE,PEPE — добавить монеты
+/remove DOGE — удалить
 /list — список монет
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
@@ -1134,15 +901,15 @@ def handle_message(chat_id, text):
 /swing BTC — свинг-сигнал
 /footprint BTC — Footprint данные
 /footprint_list — активные Footprint
-/take LONG BTC 65000 100 5 — открыть сделку (размер USDT, плечо)
+/take LONG BTC 65000 100 5 — открыть сделку
 /close 123 — закрыть сделку
 /trades — активные сделки
 /history — история сделок
 /stats — статистика
 /pnl — текущий P&L
 /reset_trades — СБРОСИТЬ ВСЕ СДЕЛКИ
-/style scalp|day|swing — сменить стиль (для всех!)
-/confidence 70 — мин. уверенность (для всех!)
+/style scalp|day|swing — сменить стиль
+/confidence 70 — мин. уверенность
 /notifications_on — включить автоуведомления
 /notifications_off — выключить
 /exchange — текущая биржа
@@ -1197,7 +964,6 @@ def handle_message(chat_id, text):
         msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
         for sym in watchlist[:5]:
             msg += f"📊 *{sym}*\n"
-            
             analysis_scalp = get_full_analysis(sym, 'scalp', 65)
             if analysis_scalp and analysis_scalp['signal']:
                 s = analysis_scalp['signal']
@@ -1207,7 +973,6 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_scalp['price'] if analysis_scalp else '?'
                 msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
-            
             analysis_day = get_full_analysis(sym, 'day', 70)
             if analysis_day and analysis_day['signal']:
                 s = analysis_day['signal']
@@ -1217,7 +982,6 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_day['price'] if analysis_day else '?'
                 msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
-            
             analysis_swing = get_full_analysis(sym, 'swing', 75)
             if analysis_swing and analysis_swing['signal']:
                 s = analysis_swing['signal']
@@ -1227,7 +991,6 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_swing['price'] if analysis_swing else '?'
                 msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
-            
             msg += "\n"
         send_message(chat_id, msg[:4000])
     
@@ -1320,13 +1083,8 @@ def handle_message(chat_id, text):
             if ex.get('active') and ex.get('price'):
                 emoji = "🟢" if ex['change'] > 0 else "🔴" if ex['change'] < 0 else "⚪"
                 msg += f"  {emoji} *{ex['exchange']}*: ${ex['price']:.2f} | {ex['change']:+.2f}% | Vol: ${ex['volume_24h']/1_000_000:.2f}M\n"
-            elif ex.get('blocked'):
-                msg += f"  ⛔ *{ex['exchange']}*: заблокирована в РФ\n"
             else:
                 msg += f"  ❌ *{ex['exchange']}*: {ex.get('error', 'недоступна')[:30]}\n"
-        
-        if agg.get('blocked_exchanges'):
-            msg += f"\n🚫 *Заблокированные биржи:* {', '.join(agg['blocked_exchanges'])}"
         
         send_message(chat_id, msg[:4000])
     
