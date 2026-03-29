@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
-import random
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -22,7 +21,7 @@ os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
 os.makedirs('data/charts', exist_ok=True)
 
-# ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ (ДЛЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ) ====================
+# ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
 
 GLOBAL_WATCHLIST_FILE = 'data/global_watchlist.json'
 GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
@@ -413,31 +412,27 @@ footprint_manager = FootprintManager()
 class MultiExchangeAggregator:
     def __init__(self):
         self.exchanges = {}
-        self.exchange_names = []
-        self.data = {}
         self.init_exchanges()
     
     def init_exchanges(self):
         exchanges_config = [
-            {'name': 'Binance', 'class': ccxt.binance, 'params': {'options': {'defaultType': 'future'}}, 'format': 'BTC/USDT'},
-            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT'},
-            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT'},
-            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT'},
-            {'name': 'OKX', 'class': ccxt.okx, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC-USDT-SWAP'},
+            {'name': 'Binance', 'class': ccxt.binance, 'params': {'options': {'defaultType': 'future'}}},
+            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}},
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}},
+            {'name': 'OKX', 'class': ccxt.okx, 'params': {'options': {'defaultType': 'swap'}}},
         ]
         for config in exchanges_config:
             try:
                 exchange = config['class'](config['params'])
                 exchange.enableRateLimit = True
                 self.exchanges[config['name']] = exchange
-                self.exchange_names.append(config['name'])
-                self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': True, 'format': config['format']}
-                print(f"✅ Агрегатор: инициализирована {config['name']}")
+                print(f"✅ Агрегатор: {config['name']} подключена")
             except Exception as e:
-                print(f"❌ Ошибка {config['name']}: {e}")
-                self.data[config['name']] = {'price': None, 'volume_24h': None, 'active': False}
+                print(f"❌ Агрегатор: {config['name']} ошибка: {e}")
+                self.exchanges[config['name']] = None
     
-    def format_symbol_for_exchange(self, exchange_name, symbol):
+    def format_symbol(self, exchange_name, symbol):
         symbol_clean = symbol.upper().replace('/USDT', '').replace('USDT', '').replace('/', '')
         if exchange_name == 'Binance':
             return f"{symbol_clean}/USDT"
@@ -451,65 +446,32 @@ class MultiExchangeAggregator:
             return f"{symbol_clean}-USDT-SWAP"
         return f"{symbol_clean}/USDT"
     
-    def fetch_all_data(self, symbol='BTC/USDT'):
+    def get_aggregated_data(self, symbol='BTC/USDT'):
         results = []
         for name, exchange in self.exchanges.items():
+            if exchange is None:
+                results.append({'exchange': name, 'price': None, 'active': False, 'error': 'Не подключена'})
+                continue
             try:
-                sym = self.format_symbol_for_exchange(name, symbol)
+                sym = self.format_symbol(name, symbol)
                 ticker = exchange.fetch_ticker(sym)
-                volume_24h = ticker.get('quoteVolume', ticker.get('baseVolume', 0))
                 results.append({
-                    'exchange': name, 'price': ticker['last'], 'volume_24h': volume_24h,
-                    'bid': ticker['bid'], 'ask': ticker['ask'], 'change': ticker.get('percentage', 0),
-                    'active': True
+                    'exchange': name, 'price': ticker['last'], 'volume_24h': ticker.get('quoteVolume', 0),
+                    'change': ticker.get('percentage', 0), 'active': True
                 })
-                self.data[name]['price'] = ticker['last']
-                self.data[name]['volume_24h'] = volume_24h
-                self.data[name]['active'] = True
             except Exception as e:
-                self.data[name]['active'] = False
-                results.append({'exchange': name, 'price': None, 'volume_24h': 0, 'active': False, 'error': str(e)[:50]})
-        return results
-    
-    def get_aggregated_data(self, symbol='BTC/USDT'):
-        results = self.fetch_all_data(symbol)
-        active_results = [r for r in results if r.get('price') and r.get('active')]
-        if not active_results:
-            return {'symbol': symbol, 'status': 'Нет доступных бирж', 'exchanges': results, 'working_count': 0, 'total_count': len(results)}
-        total_volume = sum(r['volume_24h'] for r in active_results)
-        if total_volume > 0:
-            weighted_price = sum(r['price'] * r['volume_24h'] for r in active_results) / total_volume
-        else:
-            weighted_price = sum(r['price'] for r in active_results) / len(active_results)
-        avg_price = sum(r['price'] for r in active_results) / len(active_results)
-        prices = [r['price'] for r in active_results]
-        price_spread = max(prices) - min(prices)
-        price_spread_pct = (price_spread / avg_price) * 100 if avg_price > 0 else 0
-        total_volume_24h = total_volume
-        most_active = max(active_results, key=lambda x: x['volume_24h']) if active_results else None
-        divergence = None
-        if price_spread_pct > 0.5:
-            divergence = f"⚠️ Расхождение между биржами: {price_spread_pct:.2f}%"
-        changes = [r['change'] for r in active_results if r.get('change') is not None]
-        if len(changes) >= 3:
-            positive = sum(1 for c in changes if c > 0)
-            negative = sum(1 for c in changes if c < 0)
-            if positive == len(changes):
-                consensus = "🟢 ВСЕ БИРЖИ ВВЕРХ"
-            elif negative == len(changes):
-                consensus = "🔴 ВСЕ БИРЖИ ВНИЗ"
-            else:
-                consensus = "🟡 РАЗНОНАПРАВЛЕННО"
-        else:
-            consensus = "⚪ НЕДОСТАТОЧНО ДАННЫХ"
-        working_exchanges = [r for r in results if r.get('active')]
+                results.append({'exchange': name, 'price': None, 'active': False, 'error': str(e)[:40]})
+        
+        active = [r for r in results if r.get('active') and r.get('price')]
+        if not active:
+            return None
+        
+        avg_price = sum(r['price'] for r in active) / len(active)
+        total_volume = sum(r['volume_24h'] for r in active)
+        
         return {
-            'symbol': symbol, 'weighted_price': weighted_price, 'avg_price': avg_price,
-            'price_spread': price_spread, 'price_spread_pct': price_spread_pct,
-            'total_volume_24h': total_volume_24h, 'most_active': most_active['exchange'] if most_active else None,
-            'divergence': divergence, 'consensus': consensus, 'exchanges': results,
-            'working_exchanges': [r['exchange'] for r in working_exchanges], 'working_count': len(working_exchanges),
-            'total_count': len(results), 'timestamp': datetime.now().isoformat()
+            'symbol': symbol, 'avg_price': avg_price, 'total_volume_24h': total_volume,
+            'active_count': len(active), 'total_count': len(results), 'exchanges': results
         }
 
 aggregator = MultiExchangeAggregator()
@@ -521,57 +483,41 @@ class SmartExchangeRouter:
         self.exchanges = {}
         self.current_exchange = None
         self.current_name = None
-        self.current_format = None
-        self.initialize_exchanges()
+        self.init_exchanges()
     
-    def initialize_exchanges(self):
-        exchanges_config = [
-            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}, 'format': 'BTCUSDT'},
-            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}, 'format': 'BTC/USDT'},
-            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}, 'format': 'BTC_USDT'},
-        ]
-        for config in exchanges_config:
+    def init_exchanges(self):
+        exchanges = [('Bybit', ccxt.bybit, {'options': {'defaultType': 'linear'}}),
+                     ('KuCoin', ccxt.kucoin, {}),
+                     ('Gate.io', ccxt.gateio, {'options': {'defaultType': 'swap'}})]
+        for name, cls, params in exchanges:
             try:
-                exchange = config['class'](config['params'])
-                exchange.enableRateLimit = True
-                self.exchanges[config['name']] = exchange
-                print(f"✅ Инициализирована {config['name']}")
+                ex = cls(params)
+                ex.enableRateLimit = True
+                self.exchanges[name] = ex
+                print(f"✅ {name} подключена")
             except:
-                pass
-        for name, config in [('Bybit', {'format': 'BTCUSDT'}), ('KuCoin', {'format': 'BTC/USDT'}), ('Gate.io', {'format': 'BTC_USDT'})]:
-            if name in self.exchanges:
-                self.current_exchange = self.exchanges[name]
-                self.current_name = name
-                self.current_format = config['format']
-                break
+                print(f"❌ {name} ошибка")
+        if 'Bybit' in self.exchanges:
+            self.current_exchange = self.exchanges['Bybit']
+            self.current_name = 'Bybit'
+        elif 'KuCoin' in self.exchanges:
+            self.current_exchange = self.exchanges['KuCoin']
+            self.current_name = 'KuCoin'
         orderbook_analyzer.set_exchange(self.current_exchange)
     
     def format_symbol(self, symbol):
         symbol = symbol.upper().replace('USDT', '').replace('/', '')
-        if self.current_format == 'BTCUSDT':
-            return f"{symbol}USDT"
-        elif self.current_format == 'BTC/USDT':
-            return f"{symbol}/USDT"
-        elif self.current_format == 'BTC_USDT':
-            return f"{symbol}_USDT"
-        return f"{symbol}/USDT"
+        return f"{symbol}USDT"
     
     def fetch_ohlcv(self, symbol, timeframe='1h', limit=150):
         try:
-            formatted = self.format_symbol(symbol)
-            return self.current_exchange.fetch_ohlcv(formatted, timeframe, limit=limit)
-        except Exception as e:
-            for name, exchange in self.exchanges.items():
+            return self.current_exchange.fetch_ohlcv(self.format_symbol(symbol), timeframe, limit=limit)
+        except:
+            for name, ex in self.exchanges.items():
                 if name != self.current_name:
                     try:
-                        self.current_exchange = exchange
+                        self.current_exchange = ex
                         self.current_name = name
-                        if name == 'Bybit':
-                            self.current_format = 'BTCUSDT'
-                        elif name == 'KuCoin':
-                            self.current_format = 'BTC/USDT'
-                        else:
-                            self.current_format = 'BTC_USDT'
                         orderbook_analyzer.set_exchange(self.current_exchange)
                         return self.fetch_ohlcv(symbol, timeframe, limit)
                     except:
@@ -663,7 +609,9 @@ def generate_signal(df, style='day', min_confidence=70, footprint_data=None):
     if df is None or len(df) < 50:
         return None
     current = df.iloc[-1]
-    params = {'scalp': {'sl_pct': 0.008, 'tp_pct': 0.015, 'min_conf': 65}, 'day': {'sl_pct': 0.015, 'tp_pct': 0.03, 'min_conf': 70}, 'swing': {'sl_pct': 0.025, 'tp_pct': 0.06, 'min_conf': 75}}
+    params = {'scalp': {'sl_pct': 0.008, 'tp_pct': 0.015, 'min_conf': 65},
+              'day': {'sl_pct': 0.015, 'tp_pct': 0.03, 'min_conf': 70},
+              'swing': {'sl_pct': 0.025, 'tp_pct': 0.06, 'min_conf': 75}}
     p = params.get(style, params['day'])
     score = 0
     signal_type = None
@@ -769,13 +717,10 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
 
 # ==================== TELEGRAM БОТ ====================
 
-def send_message(chat_id, text, reply_markup=None):
+def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        requests.post(url, json=payload, timeout=10)
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except:
         pass
 
@@ -826,57 +771,13 @@ def format_signal(symbol, analysis, style='day'):
         msg += f"\n\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"
         return msg
 
-def check_signals_for_all():
-    settings = get_global_settings()
-    if not settings.get('notifications_enabled', True):
-        return
-    watchlist = get_global_watchlist()
-    if not watchlist:
-        return
-    new_signals = []
-    for sym in watchlist[:5]:
-        for style, min_conf in [('scalp', 65), ('day', 70), ('swing', 75)]:
-            analysis = get_full_analysis(sym, style, min_conf)
-            if analysis and analysis['signal']:
-                signal = analysis['signal']
-                signal_key = f"{sym}_{style}_{signal['signal']}_{int(signal['entry'])}"
-                sent_file = 'data/sent_signals.json'
-                sent_signals = []
-                if os.path.exists(sent_file):
-                    with open(sent_file, 'r') as f:
-                        sent_signals = json.load(f)
-                if signal_key not in sent_signals:
-                    new_signals.append((sym, style, analysis, signal))
-                    sent_signals.append(signal_key)
-                    if len(sent_signals) > 100:
-                        sent_signals = sent_signals[-100:]
-                    with open(sent_file, 'w') as f:
-                        json.dump(sent_signals, f)
-    for sym, style, analysis, signal in new_signals:
-        print(f"🔔 НОВЫЙ СИГНАЛ: {sym} {signal['signal']} {style}")
-
-def start_auto_notifications():
-    def notification_loop():
-        print("🔄 Запущена фоновая проверка сигналов (каждые 3 минуты)")
-        while True:
-            try:
-                check_signals_for_all()
-                time.sleep(180)
-            except Exception as e:
-                print(f"Ошибка в уведомлениях: {e}")
-                time.sleep(60)
-    notification_thread = threading.Thread(target=notification_loop, daemon=True)
-    notification_thread.start()
-
-# ==================== ОБРАБОТЧИК КОМАНД ====================
-
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
     settings = get_global_settings()
     watchlist = get_global_watchlist()
     
     if text == "/start":
-        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — МУЛЬТИБИРЖЕВАЯ ВЕРСИЯ
+        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
 📡 *Footprint:* Delta, POC, кластеры объема
@@ -1046,6 +947,7 @@ def handle_message(chat_id, text):
         except Exception as e:
             send_message(chat_id, f"❌ Ошибка: {e}")
     
+    # НОВАЯ КОМАНДА /aggregate
     elif text == "/aggregate":
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
@@ -1058,31 +960,22 @@ def handle_message(chat_id, text):
         
         agg = aggregator.get_aggregated_data(sym)
         
-        if not agg or agg.get('working_count', 0) == 0:
-            send_message(chat_id, f"❌ Не удалось получить данные. Доступно бирж: {agg.get('working_count', 0)}")
+        if not agg or agg.get('active_count', 0) == 0:
+            send_message(chat_id, f"❌ Не удалось получить данные. Доступно бирж: {agg.get('active_count', 0) if agg else 0}")
             return
         
         msg = f"""📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {sym}*
 
-🏦 *Активных бирж:* {agg['working_count']}/{agg['total_count']}
+🏦 *Активных бирж:* {agg['active_count']}/{agg['total_count']}
 
 💰 *Средняя цена:* ${agg['avg_price']:.2f}
-📊 *Взвешенная цена:* ${agg['weighted_price']:.2f}
-📈 *Разброс цен:* {agg['price_spread_pct']:.2f}% (${agg['price_spread']:.2f})
 📊 *Общий объем 24h:* ${agg['total_volume_24h']/1_000_000:.2f}M
 
-🎯 *Консенсус:* {agg['consensus']}
-
-"""
-        
-        if agg['divergence']:
-            msg += f"\n{agg['divergence']}\n"
-        
-        msg += "\n📡 *ПО БИРЖАМ:*\n"
+📡 *ПО БИРЖАМ:*\n"""
         for ex in agg['exchanges']:
             if ex.get('active') and ex.get('price'):
                 emoji = "🟢" if ex['change'] > 0 else "🔴" if ex['change'] < 0 else "⚪"
-                msg += f"  {emoji} *{ex['exchange']}*: ${ex['price']:.2f} | {ex['change']:+.2f}% | Vol: ${ex['volume_24h']/1_000_000:.2f}M\n"
+                msg += f"  {emoji} *{ex['exchange']}*: ${ex['price']:.2f} | {ex['change']:+.2f}%\n"
             else:
                 msg += f"  ❌ *{ex['exchange']}*: {ex.get('error', 'недоступна')[:30]}\n"
         
@@ -1400,7 +1293,7 @@ def handle_message(chat_id, text):
 # ==================== ЗАПУСК ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT 10.0 — МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР")
+print("🚀 SMC FULL BOT — МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР")
 print("=" * 60)
 print(f"🏦 Текущая биржа для анализа: {router.current_name}")
 print("🌍 Режим: ГЛОБАЛЬНЫЙ — все пользователи видят одни и те же монеты и сделки")
@@ -1417,9 +1310,6 @@ print("Ожидание сообщений...\n")
 watchlist = get_global_watchlist()
 for sym in watchlist:
     footprint_manager.start_for_symbol(sym)
-
-# Запускаем автоматические уведомления
-start_auto_notifications()
 
 # Основной цикл
 while True:
