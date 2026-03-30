@@ -8,7 +8,7 @@ warnings.filterwarnings('ignore')
 
 print("=" * 80)
 print("🚀 РАСШИРЕННЫЙ БЭКТЕСТ — 13 МОНЕТ")
-print("   BTC, ETH, SOL, WIF, TIA, SAND + XRP, SUI, APE, DOT, ADA, GALA, LINK, SEI")
+print("   BTC, ETH, SOL, WIF, TIA, SAND, XRP, SUI, APE, DOT, ADA, LINK, SEI")
 print("   6 месяцев | Оптимальные настройки")
 print("=" * 80)
 
@@ -18,7 +18,7 @@ COMMISSION = 0.0004
 LEVERAGE = 50
 DAYS = 180
 
-# 13 монет
+# 13 монет (GALA пропущена, т.к. нет на KuCoin)
 SYMBOLS = [
     {'symbol': 'BTC/USDT', 'name': 'BTC'},
     {'symbol': 'ETH/USDT', 'name': 'ETH'},
@@ -31,7 +31,6 @@ SYMBOLS = [
     {'symbol': 'APE/USDT', 'name': 'APE'},
     {'symbol': 'DOT/USDT', 'name': 'DOT'},
     {'symbol': 'ADA/USDT', 'name': 'ADA'},
-    {'symbol': 'GALA/USDT', 'name': 'GALA'},
     {'symbol': 'LINK/USDT', 'name': 'LINK'},
     {'symbol': 'SEI/USDT', 'name': 'SEI'},
 ]
@@ -158,9 +157,19 @@ def find_order_blocks(prices, volumes, window=5):
     return bullish_ob, bearish_ob
 
 def is_active_session(timestamp):
-    """Проверка активной торговой сессии"""
-    hour = timestamp.hour
-    return hour in ACTIVE_HOURS
+    """Проверка активной торговой сессии (Лондон + Нью-Йорк)"""
+    try:
+        # Преобразуем в pandas Timestamp для получения часа
+        if isinstance(timestamp, np.datetime64):
+            ts = pd.Timestamp(timestamp)
+        elif hasattr(timestamp, 'hour'):
+            ts = timestamp
+        else:
+            ts = pd.to_datetime(timestamp)
+        hour = ts.hour
+        return hour in ACTIVE_HOURS
+    except:
+        return False
 
 # ==================== ЗАГРУЗКА ДАННЫХ ====================
 print("\n📥 ЗАГРУЗКА ДАННЫХ ЗА 6 МЕСЯЦЕВ...")
@@ -196,7 +205,7 @@ for sym in SYMBOLS:
     time.sleep(1)
 
 if failed_symbols:
-    print(f"\n⚠️ Не удалось загрузить: {', '.join(failed_symbols)}")
+    print(f"\n⚠️ Не удалось загрузить: {', '.join(set(failed_symbols))}")
 
 # ==================== СИМУЛЯЦИЯ ====================
 print("\n🎯 ЗАПУСК БЭКТЕСТА...")
@@ -216,6 +225,7 @@ for rsi_opt in RSI_OPTIONS:
         for sym in SYMBOLS:
             sym_name = sym['name']
             if sym_name not in all_data or tf['name'] not in all_data[sym_name]:
+                print(f"      {sym_name:4} | Нет данных")
                 continue
                 
             data = all_data[sym_name][tf['name']]
@@ -410,7 +420,6 @@ for rsi_opt in RSI_OPTIONS:
                     'avg_loss': round(abs(losses['pnl_pct'].mean()), 2) if len(losses) > 0 else 0
                 })
                 
-                # Вывод
                 print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f}")
             else:
                 print(f"      {sym_name:4} | Сделок:0 | Нет сигналов")
@@ -423,44 +432,44 @@ print("=" * 100)
 # Сортировка по прибыли
 sorted_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'], reverse=True)
 
-print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────┐")
-print("│ №  │ Монета │ Сделок │ Win Rate │ P&L 6 мес │ P&L год* │ Profit Factor │")
-print("├─────────────────────────────────────────────────────────────────────────────────────────────────┤")
+if sorted_results:
+    print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────┐")
+    print("│ №  │ Монета │ Сделок │ Win Rate │ P&L 6 мес │ P&L год* │ Profit Factor │")
+    print("├─────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
-for i, r in enumerate(sorted_results, 1):
-    yearly = r['pnl_pct'] * 2
-    print(f"│ {i:2}  │ {r['symbol']:6} │ {r['total_trades']:6} │ {r['win_rate']:7.1f}% │ {r['pnl_pct']:+8.2f}% │ {yearly:+8.2f}% │ {r['profit_factor']:13.2f} │")
+    for i, r in enumerate(sorted_results, 1):
+        yearly = r['pnl_pct'] * 2
+        print(f"│ {i:2}  │ {r['symbol']:6} │ {r['total_trades']:6} │ {r['win_rate']:7.1f}% │ {r['pnl_pct']:+8.2f}% │ {yearly:+8.2f}% │ {r['profit_factor']:13.2f} │")
 
-print("└─────────────────────────────────────────────────────────────────────────────────────────────────┘")
+    print("└─────────────────────────────────────────────────────────────────────────────────────────────────┘")
 
-# ТОП-5
-print("\n🏆 ТОП-5 ЛУЧШИХ МОНЕТ:")
-print("-" * 80)
-for i, r in enumerate(sorted_results[:5], 1):
-    print(f"   {i}. {r['symbol']}: +{r['pnl_pct']:.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
+    # ТОП-5
+    print("\n🏆 ТОП-5 ЛУЧШИХ МОНЕТ:")
+    print("-" * 80)
+    for i, r in enumerate(sorted_results[:5], 1):
+        print(f"   {i}. {r['symbol']}: +{r['pnl_pct']:.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
 
-# ХУДШИЕ 5
-print("\n💀 ТОП-5 ХУДШИХ МОНЕТ:")
-print("-" * 80)
-for i, r in enumerate(sorted_results[-5:], 1):
-    print(f"   {i}. {r['symbol']}: {r['pnl_pct']:+.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
+    # ХУДШИЕ 5
+    print("\n💀 ТОП-5 ХУДШИХ МОНЕТ:")
+    print("-" * 80)
+    for i, r in enumerate(sorted_results[-5:], 1):
+        print(f"   {i}. {r['symbol']}: {r['pnl_pct']:+.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
 
-# Статистика
-positive_count = len([r for r in sorted_results if r['pnl_pct'] > 0])
-negative_count = len([r for r in sorted_results if r['pnl_pct'] < 0])
-avg_pnl = sum(r['pnl_pct'] for r in sorted_results) / len(sorted_results) if sorted_results else 0
+    # Статистика
+    positive_count = len([r for r in sorted_results if r['pnl_pct'] > 0])
+    negative_count = len([r for r in sorted_results if r['pnl_pct'] < 0])
+    avg_pnl = sum(r['pnl_pct'] for r in sorted_results) / len(sorted_results) if sorted_results else 0
 
-print("\n📊 ОБЩАЯ СТАТИСТИКА:")
-print("-" * 80)
-print(f"   • Всего монет с сигналами: {len(sorted_results)}")
-print(f"   • Прибыльных монет: {positive_count} ({positive_count/len(sorted_results)*100:.1f}%)")
-print(f"   • Убыточных монет: {negative_count} ({negative_count/len(sorted_results)*100:.1f}%)")
-print(f"   • Средняя прибыль по монетам: {avg_pnl:+.2f}% за 6 мес")
-print(f"   • Средняя годовая: {avg_pnl*2:+.2f}%")
+    print("\n📊 ОБЩАЯ СТАТИСТИКА:")
+    print("-" * 80)
+    print(f"   • Всего монет с сигналами: {len(sorted_results)}")
+    print(f"   • Прибыльных монет: {positive_count} ({positive_count/len(sorted_results)*100:.1f}%)")
+    print(f"   • Убыточных монет: {negative_count} ({negative_count/len(sorted_results)*100:.1f}%)")
+    print(f"   • Средняя прибыль по монетам: {avg_pnl:+.2f}% за 6 мес")
+    print(f"   • Средняя годовая: {avg_pnl*2:+.2f}%")
 
-# Лучшая монета
-best = sorted_results[0] if sorted_results else None
-if best:
+    # Лучшая монета
+    best = sorted_results[0]
     print(f"\n🎯 ЛУЧШАЯ МОНЕТА: {best['symbol']}")
     print(f"   • Прибыль за 6 мес: +{best['pnl_pct']:.2f}%")
     print(f"   • Годовая: +{best['pnl_pct']*2:.2f}%")
@@ -468,12 +477,12 @@ if best:
     print(f"   • Profit Factor: {best['profit_factor']}")
     print(f"   • Сделок: {best['total_trades']}")
 
-# Рекомендация
-print("\n💡 ФИНАЛЬНАЯ РЕКОМЕНДАЦИЯ:")
-print("-" * 80)
+    # Рекомендация
+    print("\n💡 ФИНАЛЬНАЯ РЕКОМЕНДАЦИЯ:")
+    print("-" * 80)
 
-top_coins = [r['symbol'] for r in sorted_results[:5]]
-print(f"""
+    top_coins = [r['symbol'] for r in sorted_results[:5]]
+    print(f"""
 ✅ ЛУЧШИЕ МОНЕТЫ ДЛЯ ТОРГОВЛИ: {', '.join(top_coins)}
 ✅ ТАЙМФРЕЙМ: 1h (DAY)
 ✅ RSI: 28/72
@@ -487,6 +496,8 @@ print(f"""
    • Годовая: {best['pnl_pct']*2:.2f}%
    • С депозитом $100 → ${100 + best['pnl_pct']:.2f} через 6 месяцев
 """)
+else:
+    print("\n❌ Нет результатов для отображения")
 
 print("=" * 100)
 print("✅ БЭКТЕСТ ЗАВЕРШЕН")
