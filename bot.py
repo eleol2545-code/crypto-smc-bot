@@ -7,18 +7,18 @@ import warnings
 warnings.filterwarnings('ignore')
 
 print("=" * 80)
-print("🚀 РАСШИРЕННЫЙ БЭКТЕСТ — 13 МОНЕТ")
+print("🚀 МУЛЬТИБИРЖЕВОЙ БЭКТЕСТ — 13 МОНЕТ")
 print("   BTC, ETH, SOL, WIF, TIA, SAND, XRP, SUI, APE, DOT, ADA, LINK, SEI")
-print("   6 месяцев | Оптимальные настройки")
+print("   75x плечо | 6 месяцев | Агрегированные данные с 4 бирж")
 print("=" * 80)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 INITIAL_BALANCE = 100
 COMMISSION = 0.0004
-LEVERAGE = 50
+LEVERAGE = 75
 DAYS = 180
 
-# 13 монет (GALA пропущена, т.к. нет на KuCoin)
+# 13 монет
 SYMBOLS = [
     {'symbol': 'BTC/USDT', 'name': 'BTC'},
     {'symbol': 'ETH/USDT', 'name': 'ETH'},
@@ -35,28 +35,44 @@ SYMBOLS = [
     {'symbol': 'SEI/USDT', 'name': 'SEI'},
 ]
 
-# Таймфреймы (DAY_1h показал лучшие результаты)
+# Таймфрейм
 TIMEFRAMES = [
     {'name': 'DAY_1h', 'timeframe': '1h', 'limit': 1500, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
 ]
 
-# RSI пороги (оптимальные)
+# RSI пороги
 RSI_OPTIONS = [
     {'name': 'RSI_28_72', 'low': 28, 'high': 72},
 ]
 
-# Активные часы (Лондон + Нью-Йорк)
-ACTIVE_HOURS = list(range(10, 21))  # 10:00 - 20:00 МСК
+# Активные часы
+ACTIVE_HOURS = list(range(10, 21))
 
-# ==================== ПОДКЛЮЧЕНИЕ ====================
-print("\n📡 ПОДКЛЮЧЕНИЕ К KUCOIN...")
-exchange = ccxt.kucoin({'enableRateLimit': True})
+# ==================== БИРЖИ ДЛЯ АГРЕГАЦИИ ====================
+EXCHANGES_LIST = [
+    {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}},
+    {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {}},
+    {'name': 'OKX', 'class': ccxt.okx, 'params': {}},
+    {'name': 'Bitget', 'class': ccxt.bitget, 'params': {}},
+]
 
-try:
-    ticker = exchange.fetch_ticker('BTC/USDT')
-    print(f"   ✅ KuCoin подключена! BTC: ${ticker['last']:.2f}")
-except Exception as e:
-    print(f"   ❌ Ошибка: {e}")
+print("\n📡 ПОДКЛЮЧЕНИЕ К БИРЖАМ...")
+
+active_exchanges = []
+for ex in EXCHANGES_LIST:
+    try:
+        e = ex['class'](ex['params'])
+        e.enableRateLimit = True
+        active_exchanges.append({
+            'name': ex['name'],
+            'exchange': e
+        })
+        print(f"   ✅ {ex['name']} подключена")
+    except Exception as e:
+        print(f"   ❌ {ex['name']} ошибка: {e}")
+
+if not active_exchanges:
+    print("❌ Нет доступных бирж!")
     exit(1)
 
 # ==================== ФУНКЦИИ ИНДИКАТОРОВ ====================
@@ -157,64 +173,98 @@ def find_order_blocks(prices, volumes, window=5):
     return bullish_ob, bearish_ob
 
 def is_active_session(timestamp):
-    """Проверка активной торговой сессии (Лондон + Нью-Йорк)"""
     try:
-        # Преобразуем в pandas Timestamp для получения часа
         if isinstance(timestamp, np.datetime64):
             ts = pd.Timestamp(timestamp)
-        elif hasattr(timestamp, 'hour'):
-            ts = timestamp
         else:
-            ts = pd.to_datetime(timestamp)
+            ts = timestamp
         hour = ts.hour
         return hour in ACTIVE_HOURS
     except:
         return False
 
-# ==================== ЗАГРУЗКА ДАННЫХ ====================
-print("\n📥 ЗАГРУЗКА ДАННЫХ ЗА 6 МЕСЯЦЕВ...")
+def format_symbol_for_exchange(exchange_name, symbol):
+    """Форматирует символ для конкретной биржи"""
+    symbol_clean = symbol.replace('/USDT', '').replace('USDT', '').replace('/', '')
+    if exchange_name == 'KuCoin':
+        return f"{symbol_clean}/USDT"
+    elif exchange_name == 'Gate.io':
+        return f"{symbol_clean}_USDT"
+    elif exchange_name == 'OKX':
+        return f"{symbol_clean}-USDT-SWAP"
+    elif exchange_name == 'Bitget':
+        return f"{symbol_clean}/USDT"
+    return f"{symbol_clean}/USDT"
+
+# ==================== ЗАГРУЗКА АГРЕГИРОВАННЫХ ДАННЫХ ====================
+print("\n📥 ЗАГРУЗКА АГРЕГИРОВАННЫХ ДАННЫХ ЗА 6 МЕСЯЦЕВ...")
 
 all_data = {}
-failed_symbols = []
 
 for sym in SYMBOLS:
     print(f"\n   Загружаем {sym['name']}...")
     sym_data = {}
     
     for tf in TIMEFRAMES:
-        try:
-            limit = tf['limit']
-            ohlcv = exchange.fetch_ohlcv(sym['symbol'], tf['timeframe'], limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            sym_data[tf['name']] = {
-                'df': df,
-                'prices': df['close'].values,
-                'volumes': df['volume'].values,
-                'highs': df['high'].values,
-                'lows': df['low'].values,
-                'timestamps': df['timestamp'].values,
-                'tf_config': tf
-            }
-            print(f"      ✅ {tf['name']}: {len(df)} свечей")
-        except Exception as e:
-            print(f"      ❌ {tf['name']} ошибка: {e}")
-            failed_symbols.append(sym['name'])
+        exchange_data = []
+        
+        for ex in active_exchanges:
+            try:
+                symbol_fmt = format_symbol_for_exchange(ex['name'], sym['symbol'])
+                limit = tf['limit']
+                ohlcv = ex['exchange'].fetch_ohlcv(symbol_fmt, tf['timeframe'], limit=limit)
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                exchange_data.append(df)
+                print(f"      ✅ {ex['name']}: {len(df)} свечей")
+            except Exception as e:
+                print(f"      ❌ {ex['name']} ошибка: {e}")
+            time.sleep(0.3)
+        
+        if not exchange_data:
+            continue
+        
+        # Агрегируем данные по всем биржам
+        # Находим общий временной диапазон
+        all_dates = [df.set_index('timestamp').index for df in exchange_data]
+        common_start = max(idx.min() for idx in all_dates)
+        common_end = min(idx.max() for idx in all_dates)
+        
+        # Выравниваем и агрегируем
+        aligned_dfs = []
+        for df in exchange_data:
+            df_aligned = df.set_index('timestamp').loc[common_start:common_end].copy()
+            aligned_dfs.append(df_aligned)
+        
+        # Создаем агрегированный датафрейм
+        agg_df = pd.DataFrame(index=aligned_dfs[0].index)
+        agg_df['close'] = np.mean([df['close'].values for df in aligned_dfs], axis=0)
+        agg_df['volume'] = np.sum([df['volume'].values for df in aligned_dfs], axis=0)
+        agg_df['high'] = np.mean([df['high'].values for df in aligned_dfs], axis=0)
+        agg_df['low'] = np.mean([df['low'].values for df in aligned_dfs], axis=0)
+        agg_df['open'] = np.mean([df['open'].values for df in aligned_dfs], axis=0)
+        
+        sym_data[tf['name']] = {
+            'df': agg_df.reset_index(),
+            'prices': agg_df['close'].values,
+            'volumes': agg_df['volume'].values,
+            'highs': agg_df['high'].values,
+            'lows': agg_df['low'].values,
+            'timestamps': agg_df.index.values,
+            'tf_config': tf
+        }
+        print(f"      ✅ Агрегировано: {len(agg_df)} свечей")
     
     all_data[sym['name']] = sym_data
-    time.sleep(1)
-
-if failed_symbols:
-    print(f"\n⚠️ Не удалось загрузить: {', '.join(set(failed_symbols))}")
 
 # ==================== СИМУЛЯЦИЯ ====================
-print("\n🎯 ЗАПУСК БЭКТЕСТА...")
+print("\n🎯 ЗАПУСК МУЛЬТИБИРЖЕВОГО БЭКТЕСТА...")
 
 all_results = []
 
 for rsi_opt in RSI_OPTIONS:
     print(f"\n{'='*80}")
-    print(f"📊 ТЕСТИРУЕМ RSI: {rsi_opt['name']} ({rsi_opt['low']}/{rsi_opt['high']})")
+    print(f"📊 ТЕСТИРУЕМ RSI: {rsi_opt['name']} ({rsi_opt['low']}/{rsi_opt['high']}) | Плечо {LEVERAGE}x")
     print(f"{'='*80}")
     
     for tf in TIMEFRAMES:
@@ -263,7 +313,7 @@ for rsi_opt in RSI_OPTIONS:
                 if not is_active_session(timestamp):
                     continue
                 
-                # ADX фильтр (только тренд > 20)
+                # ADX фильтр
                 if adx[i] < 20:
                     continue
                 
@@ -286,7 +336,7 @@ for rsi_opt in RSI_OPTIONS:
                             trades.append({'side': 'LONG', 'entry': position['entry'], 'exit': position['tp'],
                                            'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'TP'})
                             position = None
-                    else:  # SHORT
+                    else:
                         if price >= position['sl']:
                             pnl_pct = (position['entry'] - position['sl']) / position['entry'] * 100 * LEVERAGE
                             pnl_usdt = position['size'] * (position['entry'] - position['sl']) / position['entry'] * LEVERAGE
@@ -309,7 +359,6 @@ for rsi_opt in RSI_OPTIONS:
                     score = 0
                     signal_type = None
                     
-                    # SMC Order Blocks
                     if bullish_ob[i] == 1:
                         score += 20
                         signal_type = 'LONG'
@@ -317,7 +366,6 @@ for rsi_opt in RSI_OPTIONS:
                         score += 20
                         signal_type = 'SHORT'
                     
-                    # RSI
                     if rsi[i] < rsi_opt['low']:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -325,13 +373,11 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
-                    # MACD
                     if macd_hist[i] > 0 and signal_type == 'LONG':
                         score += 15
                     elif macd_hist[i] < 0 and signal_type == 'SHORT':
                         score += 15
                     
-                    # Bollinger
                     if price <= bb_lower[i] * 1.005:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -339,7 +385,6 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
-                    # Stochastic
                     if stoch_k[i] < 20:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -347,7 +392,6 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
-                    # EMA тренд
                     if ema_9[i] > ema_21[i] and ema_21[i] > ema_50[i]:
                         score += 10
                         if signal_type == 'LONG': score += 5
@@ -355,11 +399,9 @@ for rsi_opt in RSI_OPTIONS:
                         score += 10
                         if signal_type == 'SHORT': score += 5
                     
-                    # Объем
                     if volume_ratio[i] > 1.5:
                         score += 10
                     
-                    # VWAP
                     if price < vwap[i] and signal_type == 'LONG':
                         score += 10
                     elif price > vwap[i] and signal_type == 'SHORT':
@@ -369,9 +411,8 @@ for rsi_opt in RSI_OPTIONS:
                     
                     if signal_type and confidence >= tf['min_conf']:
                         entry = price
-                        size = balance * 0.03  # риск 3%
+                        size = balance * 0.03
                         
-                        # ATR динамический SL/TP
                         current_atr = atr[i]
                         if current_atr > 0:
                             if signal_type == 'LONG':
@@ -415,9 +456,7 @@ for rsi_opt in RSI_OPTIONS:
                     'pnl_pct': round(total_pnl, 2),
                     'pnl_usdt': round(balance - INITIAL_BALANCE, 2),
                     'final_balance': round(balance, 2),
-                    'profit_factor': round(abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)), 2),
-                    'avg_win': round(wins['pnl_pct'].mean(), 2) if len(wins) > 0 else 0,
-                    'avg_loss': round(abs(losses['pnl_pct'].mean()), 2) if len(losses) > 0 else 0
+                    'profit_factor': round(abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)), 2)
                 })
                 
                 print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f}")
@@ -426,7 +465,7 @@ for rsi_opt in RSI_OPTIONS:
 
 # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
 print("\n" + "=" * 100)
-print("📊 РЕЗУЛЬТАТЫ БЭКТЕСТА — 13 МОНЕТ")
+print("📊 МУЛЬТИБИРЖЕВОЙ БЭКТЕСТ — 13 МОНЕТ (75x плечо)")
 print("=" * 100)
 
 # Сортировка по прибыли
@@ -477,6 +516,26 @@ if sorted_results:
     print(f"   • Profit Factor: {best['profit_factor']}")
     print(f"   • Сделок: {best['total_trades']}")
 
+    # Сравнение с обычным бэктестом
+    print("\n📈 СРАВНЕНИЕ С ОДНОБИРЖЕВЫМ ТЕСТОМ (KuCoin, 50x):")
+    print("-" * 80)
+    
+    single_results = {
+        'SOL': 86.56, 'SUI': 74.21, 'TIA': 69.34, 'ETH': 60.53, 'DOT': 56.90,
+        'SAND': 52.73, 'ADA': 44.10, 'LINK': 28.12, 'SEI': 21.51, 'XRP': 18.72,
+        'BTC': 11.69, 'APE': 6.18, 'WIF': 3.40
+    }
+    
+    print(f"{'Монета':<8} {'Одна биржа (50x)':<20} {'Мультибиржа (75x)':<20} {'Изменение':<15}")
+    print("-" * 80)
+    
+    for r in sorted_results:
+        single = single_results.get(r['symbol'], 0)
+        multi = r['pnl_pct']
+        change = multi - single
+        arrow = '▲' if change > 0 else '▼' if change < 0 else '●'
+        print(f"{r['symbol']:<8} {single:>15.2f}% {multi:>17.2f}% {arrow} {change:>+10.2f}%")
+
     # Рекомендация
     print("\n💡 ФИНАЛЬНАЯ РЕКОМЕНДАЦИЯ:")
     print("-" * 80)
@@ -488,17 +547,20 @@ if sorted_results:
 ✅ RSI: 28/72
 ✅ АКТИВНЫЕ ЧАСЫ: 10:00-20:00 МСК (Лондон + Нью-Йорк)
 ✅ РИСК НА СДЕЛКУ: 3%
-✅ ПЛЕЧО: 50x
+✅ ПЛЕЧО: {LEVERAGE}x
 ✅ SL/TP: ДИНАМИЧЕСКИЙ (1.5x ATR / 3.0x ATR)
+✅ ДАННЫЕ: АГРЕГИРОВАННЫЕ (KuCoin + Gate.io + OKX + Bitget)
 
 📈 ОЖИДАЕМАЯ ДОХОДНОСТЬ:
    • На лучших монетах: {best['pnl_pct']:.2f}% за 6 месяцев
    • Годовая: {best['pnl_pct']*2:.2f}%
    • С депозитом $100 → ${100 + best['pnl_pct']:.2f} через 6 месяцев
+   • В месяц: ~${(100 + best['pnl_pct']) / 6:.2f}
 """)
+
 else:
     print("\n❌ Нет результатов для отображения")
 
 print("=" * 100)
-print("✅ БЭКТЕСТ ЗАВЕРШЕН")
+print("✅ МУЛЬТИБИРЖЕВОЙ БЭКТЕСТ ЗАВЕРШЕН")
 print("=" * 100)
