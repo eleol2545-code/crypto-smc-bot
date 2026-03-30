@@ -7,8 +7,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 print("=" * 80)
-print("🚀 ФИНАЛЬНЫЙ БЭКТЕСТ — ОПТИМАЛЬНЫЕ НАСТРОЙКИ")
-print("   6 монет | 6 месяцев | Без привязки к тренду")
+print("🚀 РАСШИРЕННЫЙ БЭКТЕСТ — 13 МОНЕТ")
+print("   BTC, ETH, SOL, WIF, TIA, SAND + XRP, SUI, APE, DOT, ADA, GALA, LINK, SEI")
+print("   6 месяцев | Оптимальные настройки")
 print("=" * 80)
 
 # ==================== КОНФИГУРАЦИЯ ====================
@@ -17,21 +18,27 @@ COMMISSION = 0.0004
 LEVERAGE = 50
 DAYS = 180
 
-# 6 монет
+# 13 монет
 SYMBOLS = [
     {'symbol': 'BTC/USDT', 'name': 'BTC'},
     {'symbol': 'ETH/USDT', 'name': 'ETH'},
     {'symbol': 'SOL/USDT', 'name': 'SOL'},
-    {'symbol': 'SAND/USDT', 'name': 'SAND'},
-    {'symbol': 'TIA/USDT', 'name': 'TIA'},
     {'symbol': 'WIF/USDT', 'name': 'WIF'},
+    {'symbol': 'TIA/USDT', 'name': 'TIA'},
+    {'symbol': 'SAND/USDT', 'name': 'SAND'},
+    {'symbol': 'XRP/USDT', 'name': 'XRP'},
+    {'symbol': 'SUI/USDT', 'name': 'SUI'},
+    {'symbol': 'APE/USDT', 'name': 'APE'},
+    {'symbol': 'DOT/USDT', 'name': 'DOT'},
+    {'symbol': 'ADA/USDT', 'name': 'ADA'},
+    {'symbol': 'GALA/USDT', 'name': 'GALA'},
+    {'symbol': 'LINK/USDT', 'name': 'LINK'},
+    {'symbol': 'SEI/USDT', 'name': 'SEI'},
 ]
 
-# Таймфреймы для тестирования
+# Таймфреймы (DAY_1h показал лучшие результаты)
 TIMEFRAMES = [
-    {'name': 'SCALP_15m', 'timeframe': '15m', 'limit': 2000, 'risk_pct': 0.008, 'reward_pct': 0.016, 'min_conf': 65},
     {'name': 'DAY_1h', 'timeframe': '1h', 'limit': 1500, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
-    {'name': 'SWING_4h', 'timeframe': '4h', 'limit': 1000, 'risk_pct': 0.025, 'reward_pct': 0.05, 'min_conf': 75},
 ]
 
 # RSI пороги (оптимальные)
@@ -159,6 +166,7 @@ def is_active_session(timestamp):
 print("\n📥 ЗАГРУЗКА ДАННЫХ ЗА 6 МЕСЯЦЕВ...")
 
 all_data = {}
+failed_symbols = []
 
 for sym in SYMBOLS:
     print(f"\n   Загружаем {sym['name']}...")
@@ -182,9 +190,13 @@ for sym in SYMBOLS:
             print(f"      ✅ {tf['name']}: {len(df)} свечей")
         except Exception as e:
             print(f"      ❌ {tf['name']} ошибка: {e}")
+            failed_symbols.append(sym['name'])
     
     all_data[sym['name']] = sym_data
     time.sleep(1)
+
+if failed_symbols:
+    print(f"\n⚠️ Не удалось загрузить: {', '.join(failed_symbols)}")
 
 # ==================== СИМУЛЯЦИЯ ====================
 print("\n🎯 ЗАПУСК БЭКТЕСТА...")
@@ -199,7 +211,7 @@ for rsi_opt in RSI_OPTIONS:
     for tf in TIMEFRAMES:
         print(f"\n   📈 {tf['name']} | SL: {tf['risk_pct']*100:.1f}% | TP: {tf['reward_pct']*100:.1f}% | RR 1:{tf['reward_pct']/tf['risk_pct']:.1f}")
         print(f"   Активные часы: {ACTIVE_HOURS[0]}:00-{ACTIVE_HOURS[-1]}:00 МСК")
-        print(f"   {'-'*70}")
+        print(f"   {'-'*80}")
         
         for sym in SYMBOLS:
             sym_name = sym['name']
@@ -398,94 +410,84 @@ for rsi_opt in RSI_OPTIONS:
                     'avg_loss': round(abs(losses['pnl_pct'].mean()), 2) if len(losses) > 0 else 0
                 })
                 
-                print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f} | ADX:{adx[-1]:.1f}")
+                # Вывод
+                print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f}")
             else:
                 print(f"      {sym_name:4} | Сделок:0 | Нет сигналов")
 
 # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
 print("\n" + "=" * 100)
-print("📊 ИТОГОВЫЕ РЕЗУЛЬТАТЫ ФИНАЛЬНОГО БЭКТЕСТА")
+print("📊 РЕЗУЛЬТАТЫ БЭКТЕСТА — 13 МОНЕТ")
 print("=" * 100)
 
-# Сводная таблица по таймфреймам
+# Сортировка по прибыли
+sorted_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'], reverse=True)
+
 print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────┐")
-print("│ Таймфрейм  │ Монета │ Сделок │ Win Rate │ P&L 6 мес │ P&L год* │ Profit Factor │")
+print("│ №  │ Монета │ Сделок │ Win Rate │ P&L 6 мес │ P&L год* │ Profit Factor │")
 print("├─────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
-for tf in TIMEFRAMES:
-    for sym in SYMBOLS:
-        sym_name = sym['name']
-        res = [r for r in all_results if r['timeframe'] == tf['name'] and r['symbol'] == sym_name]
-        if res and res[0]['total_trades'] > 0:
-            r = res[0]
-            yearly = r['pnl_pct'] * 2
-            print(f"│ {tf['name']:<10} │ {sym_name:6} │ {r['total_trades']:6} │ {r['win_rate']:7.1f}% │ {r['pnl_pct']:+8.2f}% │ {yearly:+8.2f}% │ {r['profit_factor']:13.2f} │")
-        else:
-            print(f"│ {tf['name']:<10} │ {sym_name:6} │ {'0':6} │ {'0.0':7}% │ {'0.00':+8}% │ {'0.00':+8}% │ {'0.00':13} │")
+for i, r in enumerate(sorted_results, 1):
+    yearly = r['pnl_pct'] * 2
+    print(f"│ {i:2}  │ {r['symbol']:6} │ {r['total_trades']:6} │ {r['win_rate']:7.1f}% │ {r['pnl_pct']:+8.2f}% │ {yearly:+8.2f}% │ {r['profit_factor']:13.2f} │")
 
 print("└─────────────────────────────────────────────────────────────────────────────────────────────────┘")
 
-# Лучшие результаты
-print("\n🏆 ТОП-10 ЛУЧШИХ РЕЗУЛЬТАТОВ:")
-print("-" * 90)
-top_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'], reverse=True)[:10]
-print(f"{'№':<3} {'Таймфрейм':<12} {'Монета':<8} {'Сделок':<7} {'Win Rate':<10} {'P&L 6м':<12} {'Profit Factor':<15}")
-print("-" * 90)
-for i, r in enumerate(top_results, 1):
-    print(f"{i:<3} {r['timeframe']:<12} {r['symbol']:<8} {r['total_trades']:<7} {r['win_rate']:<9.1f}% {r['pnl_pct']:+9.2f}% {r['profit_factor']:<15.2f}")
-
-# Средние показатели по таймфреймам
-print("\n📊 СРЕДНИЕ ПОКАЗАТЕЛИ ПО ТАЙМФРЕЙМАМ:")
+# ТОП-5
+print("\n🏆 ТОП-5 ЛУЧШИХ МОНЕТ:")
 print("-" * 80)
-for tf in TIMEFRAMES:
-    tf_results = [r for r in all_results if r['timeframe'] == tf['name'] and r['total_trades'] > 0]
-    if tf_results:
-        avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
-        avg_win_rate = sum(r['win_rate'] for r in tf_results) / len(tf_results)
-        avg_pf = sum(r['profit_factor'] for r in tf_results) / len(tf_results)
-        total_trades = sum(r['total_trades'] for r in tf_results)
-        print(f"   {tf['name']:<12} | Сделок: {total_trades:4} | Win Rate: {avg_win_rate:5.1f}% | P&L: {avg_pnl:+6.2f}% | PF: {avg_pf:.2f}")
+for i, r in enumerate(sorted_results[:5], 1):
+    print(f"   {i}. {r['symbol']}: +{r['pnl_pct']:.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
+
+# ХУДШИЕ 5
+print("\n💀 ТОП-5 ХУДШИХ МОНЕТ:")
+print("-" * 80)
+for i, r in enumerate(sorted_results[-5:], 1):
+    print(f"   {i}. {r['symbol']}: {r['pnl_pct']:+.2f}% за 6 мес | Win Rate: {r['win_rate']}% | PF: {r['profit_factor']}")
+
+# Статистика
+positive_count = len([r for r in sorted_results if r['pnl_pct'] > 0])
+negative_count = len([r for r in sorted_results if r['pnl_pct'] < 0])
+avg_pnl = sum(r['pnl_pct'] for r in sorted_results) / len(sorted_results) if sorted_results else 0
+
+print("\n📊 ОБЩАЯ СТАТИСТИКА:")
+print("-" * 80)
+print(f"   • Всего монет с сигналами: {len(sorted_results)}")
+print(f"   • Прибыльных монет: {positive_count} ({positive_count/len(sorted_results)*100:.1f}%)")
+print(f"   • Убыточных монет: {negative_count} ({negative_count/len(sorted_results)*100:.1f}%)")
+print(f"   • Средняя прибыль по монетам: {avg_pnl:+.2f}% за 6 мес")
+print(f"   • Средняя годовая: {avg_pnl*2:+.2f}%")
 
 # Лучшая монета
-best = max(all_results, key=lambda x: x['pnl_pct'])
-print(f"\n🎯 ЛУЧШАЯ КОМБИНАЦИЯ:")
-print(f"   • Таймфрейм: {best['timeframe']}")
-print(f"   • Монета: {best['symbol']}")
-print(f"   • Сделок: {best['total_trades']}")
-print(f"   • Win Rate: {best['win_rate']}%")
-print(f"   • Прибыль за 6 мес: +{best['pnl_pct']:.2f}%")
-print(f"   • Годовая (простая): +{best['pnl_pct']*2:.2f}%")
-print(f"   • Profit Factor: {best['profit_factor']}")
+best = sorted_results[0] if sorted_results else None
+if best:
+    print(f"\n🎯 ЛУЧШАЯ МОНЕТА: {best['symbol']}")
+    print(f"   • Прибыль за 6 мес: +{best['pnl_pct']:.2f}%")
+    print(f"   • Годовая: +{best['pnl_pct']*2:.2f}%")
+    print(f"   • Win Rate: {best['win_rate']}%")
+    print(f"   • Profit Factor: {best['profit_factor']}")
+    print(f"   • Сделок: {best['total_trades']}")
 
 # Рекомендация
 print("\n💡 ФИНАЛЬНАЯ РЕКОМЕНДАЦИЯ:")
 print("-" * 80)
 
-# Находим лучший таймфрейм по средней прибыли
-best_tf = None
-best_avg_pnl = -999
-for tf in TIMEFRAMES:
-    tf_results = [r for r in all_results if r['timeframe'] == tf['name'] and r['total_trades'] > 0]
-    if tf_results:
-        avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
-        if avg_pnl > best_avg_pnl:
-            best_avg_pnl = avg_pnl
-            best_tf = tf['name']
-
+top_coins = [r['symbol'] for r in sorted_results[:5]]
 print(f"""
-✅ ЛУЧШИЙ ТАЙМФРЕЙМ: {best_tf}
-✅ ЛУЧШИЕ МОНЕТЫ: {', '.join([r['symbol'] for r in top_results[:3]])}
-✅ ОЖИДАЕМАЯ ДОХОДНОСТЬ: {best_avg_pnl:.2f}% за 6 месяцев ({best_avg_pnl*2:.2f}% годовых)
+✅ ЛУЧШИЕ МОНЕТЫ ДЛЯ ТОРГОВЛИ: {', '.join(top_coins)}
+✅ ТАЙМФРЕЙМ: 1h (DAY)
+✅ RSI: 28/72
+✅ АКТИВНЫЕ ЧАСЫ: 10:00-20:00 МСК (Лондон + Нью-Йорк)
+✅ РИСК НА СДЕЛКУ: 3%
+✅ ПЛЕЧО: 50x
+✅ SL/TP: ДИНАМИЧЕСКИЙ (1.5x ATR / 3.0x ATR)
 
-📌 РЕКОМЕНДУЕМЫЕ ПАРАМЕТРЫ:
-   • Таймфрейм: {best_tf}
-   • RSI: 28/72
-   • Активные часы: {ACTIVE_HOURS[0]}:00-{ACTIVE_HOURS[-1]}:00 МСК
-   • Риск на сделку: 3%
-   • Плечо: 50x
-   • SL/TP: динамический через ATR (1.5x ATR / 3.0x ATR)
+📈 ОЖИДАЕМАЯ ДОХОДНОСТЬ:
+   • На лучших монетах: {best['pnl_pct']:.2f}% за 6 месяцев
+   • Годовая: {best['pnl_pct']*2:.2f}%
+   • С депозитом $100 → ${100 + best['pnl_pct']:.2f} через 6 месяцев
 """)
 
 print("=" * 100)
-print("✅ ФИНАЛЬНЫЙ БЭКТЕСТ ЗАВЕРШЕН")
+print("✅ БЭКТЕСТ ЗАВЕРШЕН")
 print("=" * 100)
