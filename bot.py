@@ -11,7 +11,7 @@ import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
 
-TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
+TELEGRAM_TOKEN = "7424012414:AAH_5-GVsX8-JMEXyN9w1VYIcK_1PInxiOI"
 LAST_UPDATE_ID = 0
 
 os.makedirs('data', exist_ok=True)
@@ -328,16 +328,16 @@ def find_order_blocks(prices, volumes, window=5):
     for i in range(window, len(prices) - 1):
         avg_volume = np.mean(volumes[max(0, i-window):i])
         if prices[i] > prices[i-1] * 1.01 and volumes[i] > avg_volume * 1.5:
-            ob_high_val = prices[i-1] * 1.01
-            ob_low_val = prices[i-1] * 0.99
+            ob_high_val = prices[i-1] * 1.02
+            ob_low_val = prices[i-1] * 0.98
             for j in range(i, min(i + 20, len(prices))):
                 if j < len(bullish_ob):
                     bullish_ob[j] = 1
                     ob_high[j] = ob_high_val
                     ob_low[j] = ob_low_val
         elif prices[i] < prices[i-1] * 0.99 and volumes[i] > avg_volume * 1.5:
-            ob_high_val = prices[i-1] * 1.01
-            ob_low_val = prices[i-1] * 0.99
+            ob_high_val = prices[i-1] * 1.02
+            ob_low_val = prices[i-1] * 0.98
             for j in range(i, min(i + 20, len(prices))):
                 if j < len(bearish_ob):
                     bearish_ob[j] = 1
@@ -422,20 +422,20 @@ def generate_signal(df, style='day', min_confidence=70):
     if bullish_ob[i] == 1:
         score += 20
         signal_type = 'LONG'
-        reasons.append(f"🔵 Бычий Order Block: ${ob_low[i]:.0f}-${ob_high[i]:.0f}")
+        reasons.append(f"🔵 Бычий Order Block")
     if bearish_ob[i] == 1:
         score += 20
         signal_type = 'SHORT'
-        reasons.append(f"🔴 Медвежий Order Block: ${ob_low[i]:.0f}-${ob_high[i]:.0f}")
+        reasons.append(f"🔴 Медвежий Order Block")
     
     if fvg_bullish[i] == 1:
         score += 10
         if not signal_type: signal_type = 'LONG'
-        reasons.append(f"💚 Bullish FVG: ${fvg_bottom[i]:.0f}-${fvg_top[i]:.0f}")
+        reasons.append(f"💚 Bullish FVG")
     if fvg_bearish[i] == 1:
         score += 10
         if not signal_type: signal_type = 'SHORT'
-        reasons.append(f"❤️ Bearish FVG: ${fvg_bottom[i]:.0f}-${fvg_top[i]:.0f}")
+        reasons.append(f"❤️ Bearish FVG")
     
     if rsi[i] < RSI_LOW:
         score += 15
@@ -516,13 +516,22 @@ def generate_signal(df, style='day', min_confidence=70):
                 tp = entry * (1 - p['tp_pct'])
         
         return {
-            'signal': signal_type, 'entry': entry, 'sl': sl, 'tp': tp,
-            'confidence': confidence, 'score': score,
-            'rr': round(abs(tp - entry) / abs(sl - entry), 1), 'reasons': reasons[:7],
-            'bullish_ob': bullish_ob, 'bearish_ob': bearish_ob,
-            'ob_high': ob_high, 'ob_low': ob_low,
-            'fvg_bullish': fvg_bullish, 'fvg_bearish': fvg_bearish,
-            'fvg_top': fvg_top, 'fvg_bottom': fvg_bottom
+            'signal': signal_type, 
+            'entry': entry, 
+            'sl': sl, 
+            'tp': tp,
+            'confidence': confidence, 
+            'score': score,
+            'rr': round(abs(tp - entry) / abs(sl - entry), 1), 
+            'reasons': reasons[:7],
+            'bullish_ob': bullish_ob.tolist(),
+            'bearish_ob': bearish_ob.tolist(),
+            'ob_high': ob_high.tolist(),
+            'ob_low': ob_low.tolist(),
+            'fvg_bullish': fvg_bullish.tolist(),
+            'fvg_bearish': fvg_bearish.tolist(),
+            'fvg_top': fvg_top.tolist(),
+            'fvg_bottom': fvg_bottom.tolist()
         }
     return None
 
@@ -561,34 +570,34 @@ def generate_smc_chart(symbol, df, analysis, signal):
     
     # Order Blocks
     if signal:
-        for i in range(len(df_plot)):
-            idx = len(df) - 100 + i
-            if idx < len(signal.get('bullish_ob', [])) and signal['bullish_ob'][idx] == 1:
-                ob_h = signal['ob_high'][idx]
-                ob_l = signal['ob_low'][idx]
+        for idx in range(len(df_plot)):
+            orig_idx = len(df) - 100 + idx
+            if orig_idx < len(signal.get('bullish_ob', [])) and signal['bullish_ob'][orig_idx] == 1:
+                ob_h = signal['ob_high'][orig_idx]
+                ob_l = signal['ob_low'][orig_idx]
                 if ob_h > 0 and ob_l > 0:
                     ax1.axhspan(ob_l, ob_h, alpha=0.2, color='green')
-                    ax1.text(dates.iloc[i], ob_h, 'BUY OB', color='green', fontsize=8, ha='right')
-            if idx < len(signal.get('bearish_ob', [])) and signal['bearish_ob'][idx] == 1:
-                ob_h = signal['ob_high'][idx]
-                ob_l = signal['ob_low'][idx]
+                    ax1.text(dates.iloc[idx], ob_h, 'BUY OB', color='green', fontsize=7, ha='right')
+            if orig_idx < len(signal.get('bearish_ob', [])) and signal['bearish_ob'][orig_idx] == 1:
+                ob_h = signal['ob_high'][orig_idx]
+                ob_l = signal['ob_low'][orig_idx]
                 if ob_h > 0 and ob_l > 0:
                     ax1.axhspan(ob_l, ob_h, alpha=0.2, color='red')
-                    ax1.text(dates.iloc[i], ob_h, 'SELL OB', color='red', fontsize=8, ha='right')
+                    ax1.text(dates.iloc[idx], ob_h, 'SELL OB', color='red', fontsize=7, ha='right')
         
         # FVG
-        for i in range(len(df_plot)):
-            idx = len(df) - 100 + i
-            if idx < len(signal.get('fvg_bullish', [])) and signal['fvg_bullish'][idx] == 1:
-                fvg_t = signal['fvg_top'][idx]
-                fvg_b = signal['fvg_bottom'][idx]
+        for idx in range(len(df_plot)):
+            orig_idx = len(df) - 100 + idx
+            if orig_idx < len(signal.get('fvg_bullish', [])) and signal['fvg_bullish'][orig_idx] == 1:
+                fvg_t = signal['fvg_top'][orig_idx]
+                fvg_b = signal['fvg_bottom'][orig_idx]
                 if fvg_t > 0 and fvg_b > 0:
-                    ax1.axhspan(fvg_b, fvg_t, alpha=0.1, color='lime')
-            if idx < len(signal.get('fvg_bearish', [])) and signal['fvg_bearish'][idx] == 1:
-                fvg_t = signal['fvg_top'][idx]
-                fvg_b = signal['fvg_bottom'][idx]
+                    ax1.axhspan(fvg_b, fvg_t, alpha=0.15, color='lime')
+            if orig_idx < len(signal.get('fvg_bearish', [])) and signal['fvg_bearish'][orig_idx] == 1:
+                fvg_t = signal['fvg_top'][orig_idx]
+                fvg_b = signal['fvg_bottom'][orig_idx]
                 if fvg_t > 0 and fvg_b > 0:
-                    ax1.axhspan(fvg_b, fvg_t, alpha=0.1, color='orange')
+                    ax1.axhspan(fvg_b, fvg_t, alpha=0.15, color='orange')
     
     # POC
     if analysis and analysis.get('poc'):
@@ -709,7 +718,7 @@ def handle_message(chat_id, text):
 /list — список монет
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
-/chart BTC — график с уровнями SMC
+/chart BTC — график с уровнями SMC (OB, FVG, POC)
 /analyze PEPE — анализ ЛЮБОЙ монеты
 /take LONG BTC 65000 100 5 — открыть сделку (размер, плечо)
 /close 123 — закрыть сделку
