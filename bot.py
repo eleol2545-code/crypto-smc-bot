@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
+import random
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -20,6 +21,31 @@ LAST_UPDATE_ID = 0
 os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
 os.makedirs('data/charts', exist_ok=True)
+
+# ==================== ПРОКСИ ====================
+
+PROXY_LIST = [
+    "socks5://45.94.31.77:1080",
+    "socks5://45.94.31.78:1080",
+    "http://45.94.31.77:8080",
+    "http://45.94.31.78:8080",
+]
+
+def get_working_proxy():
+    for proxy in PROXY_LIST:
+        try:
+            proxy_type = proxy.split("://")[0]
+            proxies = {"http": proxy, "https": proxy}
+            r = requests.get("https://api.ipify.org", proxies=proxies, timeout=5)
+            if r.status_code == 200:
+                print(f"✅ Рабочий прокси: {proxy}")
+                return proxies
+        except:
+            continue
+    print("⚠️ Работаем без прокси")
+    return None
+
+PROXIES = get_working_proxy()
 
 # ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
 
@@ -165,6 +191,41 @@ def format_price(price):
     else:
         return f"{price:.0f}"
 
+# ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ С ПРОКСИ ====================
+
+def create_exchange_with_proxy(exchange_class, params):
+    try:
+        exchange = exchange_class(params)
+        exchange.enableRateLimit = True
+        if PROXIES:
+            exchange.http_proxy = PROXIES.get('http')
+            exchange.https_proxy = PROXIES.get('https')
+        return exchange
+    except:
+        return None
+
+exchange = None
+exchange_name = None
+
+for name, cls, params in [
+    ('Bybit', ccxt.bybit, {'options': {'defaultType': 'linear'}}),
+    ('KuCoin', ccxt.kucoin, {}),
+    ('Gate.io', ccxt.gateio, {'options': {'defaultType': 'swap'}}),
+]:
+    ex = create_exchange_with_proxy(cls, params)
+    if ex:
+        try:
+            ticker = ex.fetch_ticker('BTCUSDT')
+            exchange = ex
+            exchange_name = name
+            print(f"✅ {name} подключена через прокси")
+            break
+        except:
+            continue
+
+if not exchange:
+    print("⚠️ Работаем в тестовом режиме")
+
 # ==================== ГЕНЕРАЦИЯ ГРАФИКА ====================
 
 def generate_smc_chart(symbol, df, analysis, signal, style='day'):
@@ -239,8 +300,8 @@ class OrderBookAnalyzer:
     def __init__(self):
         self.exchange = None
     
-    def set_exchange(self, exchange):
-        self.exchange = exchange
+    def set_exchange(self, ex):
+        self.exchange = ex
     
     def get_orderbook(self, symbol):
         try:
@@ -275,119 +336,6 @@ class OrderBookAnalyzer:
         }
 
 orderbook_analyzer = OrderBookAnalyzer()
-
-# ==================== МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР ====================
-
-class MultiExchangeAggregator:
-    def __init__(self):
-        self.exchanges = {}
-        self.init_exchanges()
-    
-    def init_exchanges(self):
-        exchanges_config = [
-            {'name': 'Bybit', 'class': ccxt.bybit, 'params': {'options': {'defaultType': 'linear'}}},
-            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}},
-            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {'options': {'defaultType': 'swap'}}},
-        ]
-        for config in exchanges_config:
-            try:
-                exchange = config['class'](config['params'])
-                exchange.enableRateLimit = True
-                self.exchanges[config['name']] = exchange
-                print(f"✅ Агрегатор: {config['name']} подключена")
-            except Exception as e:
-                print(f"❌ Агрегатор: {config['name']} ошибка: {e}")
-                self.exchanges[config['name']] = None
-    
-    def format_symbol(self, exchange_name, symbol):
-        symbol_clean = symbol.upper().replace('/USDT', '').replace('USDT', '').replace('/', '')
-        if exchange_name == 'Bybit':
-            return f"{symbol_clean}USDT"
-        elif exchange_name == 'KuCoin':
-            return f"{symbol_clean}/USDT"
-        elif exchange_name == 'Gate.io':
-            return f"{symbol_clean}_USDT"
-        return f"{symbol_clean}/USDT"
-    
-    def get_aggregated_data(self, symbol='BTC/USDT'):
-        results = []
-        for name, exchange in self.exchanges.items():
-            if exchange is None:
-                results.append({'exchange': name, 'price': None, 'active': False})
-                continue
-            try:
-                sym = self.format_symbol(name, symbol)
-                ticker = exchange.fetch_ticker(sym)
-                results.append({
-                    'exchange': name, 'price': ticker['last'], 'volume_24h': ticker.get('quoteVolume', 0),
-                    'change': ticker.get('percentage', 0), 'active': True
-                })
-            except Exception as e:
-                results.append({'exchange': name, 'price': None, 'active': False})
-        
-        active = [r for r in results if r.get('active') and r.get('price')]
-        if not active:
-            return None
-        
-        avg_price = sum(r['price'] for r in active) / len(active)
-        total_volume = sum(r['volume_24h'] for r in active)
-        
-        return {
-            'symbol': symbol, 'avg_price': avg_price, 'total_volume_24h': total_volume,
-            'active_count': len(active), 'total_count': len(results), 'exchanges': results
-        }
-
-aggregator = MultiExchangeAggregator()
-
-# ==================== РОУТЕР ДЛЯ АНАЛИЗА ====================
-
-class SmartExchangeRouter:
-    def __init__(self):
-        self.exchanges = {}
-        self.current_exchange = None
-        self.current_name = None
-        self.init_exchanges()
-    
-    def init_exchanges(self):
-        exchanges = [('Bybit', ccxt.bybit, {'options': {'defaultType': 'linear'}}),
-                     ('KuCoin', ccxt.kucoin, {}),
-                     ('Gate.io', ccxt.gateio, {'options': {'defaultType': 'swap'}})]
-        for name, cls, params in exchanges:
-            try:
-                ex = cls(params)
-                ex.enableRateLimit = True
-                self.exchanges[name] = ex
-                print(f"✅ {name} подключена")
-            except:
-                print(f"❌ {name} ошибка")
-        if 'Bybit' in self.exchanges:
-            self.current_exchange = self.exchanges['Bybit']
-            self.current_name = 'Bybit'
-        elif 'KuCoin' in self.exchanges:
-            self.current_exchange = self.exchanges['KuCoin']
-            self.current_name = 'KuCoin'
-        orderbook_analyzer.set_exchange(self.current_exchange)
-    
-    def format_symbol(self, symbol):
-        symbol = symbol.upper().replace('USDT', '').replace('/', '')
-        return f"{symbol}USDT"
-    
-    def fetch_ohlcv(self, symbol, timeframe='1h', limit=150):
-        try:
-            return self.current_exchange.fetch_ohlcv(self.format_symbol(symbol), timeframe, limit=limit)
-        except:
-            for name, ex in self.exchanges.items():
-                if name != self.current_name:
-                    try:
-                        self.current_exchange = ex
-                        self.current_name = name
-                        orderbook_analyzer.set_exchange(self.current_exchange)
-                        return self.fetch_ohlcv(symbol, timeframe, limit)
-                    except:
-                        continue
-            return None
-
-router = SmartExchangeRouter()
 
 # ==================== SMC АНАЛИЗ ====================
 
@@ -468,7 +416,7 @@ def calculate_volume_profile(df, bars=50):
     poc = max(levels, key=lambda x: x['volume']) if levels else None
     return poc['price'] if poc else None
 
-def generate_signal(df, style='day', min_confidence=70, footprint_data=None):
+def generate_signal(df, style='day', min_confidence=70):
     if df is None or len(df) < 50:
         return None
     current = df.iloc[-1]
@@ -545,9 +493,11 @@ def generate_signal(df, style='day', min_confidence=70, footprint_data=None):
     return None
 
 def get_full_analysis(symbol, style='day', min_confidence=70):
+    if not exchange:
+        return None
     try:
-        ohlcv = router.fetch_ohlcv(symbol, '1h', 150)
-        if not ohlcv: return None
+        sym = f"{symbol}USDT"
+        ohlcv = exchange.fetch_ohlcv(sym, '1h', 150)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = calculate_indicators(df)
@@ -557,7 +507,7 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
         return {
             'price': df['close'].iloc[-1], 'signal': signal, 'poc': poc,
             'support': df['low'].iloc[-20:].min(), 'resistance': df['high'].iloc[-20:].max(),
-            'exchange': router.current_name, 'df': df
+            'exchange': exchange_name, 'df': df
         }
     except Exception as e:
         print(f"Error: {e}")
@@ -568,7 +518,7 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10, proxies=PROXIES)
     except:
         pass
 
@@ -577,15 +527,15 @@ def send_photo(chat_id, photo_buf, caption=""):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         files = {'photo': ('chart.png', photo_buf, 'image/png')}
         data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
-        requests.post(url, files=files, data=data, timeout=10)
+        requests.post(url, files=files, data=data, timeout=10, proxies=PROXIES)
     except:
         pass
 
 def format_signal(symbol, analysis, style='day'):
-    if not analysis: return f"❌ Ошибка получения данных для {symbol}"
+    if not analysis:
+        return f"❌ Ошибка получения данных для {symbol}"
     signal = analysis['signal']
     price = analysis['price']
-    exchange = analysis.get('exchange', router.current_name)
     if signal:
         emoji = "📈" if signal['signal'] == 'LONG' else "📉"
         msg = f"""{emoji} *{signal['signal']} СИГНАЛ* | {symbol} | {style.upper()}
@@ -600,19 +550,20 @@ def format_signal(symbol, analysis, style='day'):
 🎯 TP: {format_price(signal['tp'])}
 
 📊 *Причины:*\n"""
-        for r in signal['reasons']: msg += f"• {r}\n"
-        if analysis['poc']: msg += f"• 🟡 POC (свечной): {format_price(analysis['poc'])}\n"
-        msg += f"\n🏦 *Биржа:* {exchange}"
+        for r in signal['reasons']:
+            msg += f"• {r}\n"
+        if analysis['poc']:
+            msg += f"• 🟡 POC: {format_price(analysis['poc'])}\n"
+        msg += f"\n🏦 *Биржа:* {analysis['exchange']}"
         return msg
     else:
-        msg = f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
+        return f"""⏳ *НЕТ СИГНАЛА* | {symbol} | {style.upper()}
 
 💰 Цена: {format_price(price)}
 🟢 Поддержка: {format_price(analysis['support'])}
 🔴 Сопротивление: {format_price(analysis['resistance'])}
 📊 POC: {format_price(analysis['poc'])}
-\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {exchange}"""
-        return msg
+\n💡 Рекомендация: наблюдение\n🏦 *Биржа:* {analysis['exchange']}"""
 
 def handle_message(chat_id, text):
     print(f"Message from {chat_id}: {text}")
@@ -620,13 +571,17 @@ def handle_message(chat_id, text):
     watchlist = get_global_watchlist()
     
     if text == "/start":
-        send_message(chat_id, f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
+        status = "🟢 РАБОТАЕТ" if exchange else "🟡 ТЕСТОВЫЙ РЕЖИМ"
+        msg = f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
+
+📊 *Статус:* {status}
+🏦 *Биржа:* {exchange_name if exchange else 'Тестовый режим'}
+🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}
+🌍 *Режим:* Глобальный (все видят одно)
 
 📊 *Методология:* SMC/ICT + Order Blocks + FVG + Volume Profile
 📈 *Индикаторы:* RSI, MACD, Bollinger, Stochastic, VWAP, EMA
-🎯 *Стили:* SCALP, DAY, SWING
-
-🌍 *ГЛОБАЛЬНЫЙ РЕЖИМ:* Все пользователи видят одни и те же монеты!
+🎯 *Стили:* SCALP (внутри дня), DAY (дневная), SWING (среднесрок)
 
 *Команды:*
 /add BTC,ETH,SOL — добавить монеты
@@ -636,7 +591,7 @@ def handle_message(chat_id, text):
 /all_signals — сигналы по ВСЕМ стилям!
 /chart BTC — график с уровнями SMC
 /orderbook BTC — анализ стакана
-/aggregate BTC — агрегированные данные со всех бирж!
+/aggregate BTC — агрегированные данные со всех бирж
 /analyze PEPE — анализ любой монеты
 /scalp BTC — скальп-сигнал
 /swing BTC — свинг-сигнал
@@ -653,7 +608,8 @@ def handle_message(chat_id, text):
 /notifications_off — выключить
 /exchange — текущая биржа
 /status — статус
-/help — помощь""")
+/help — помощь"""
+        send_message(chat_id, msg)
     
     elif text.startswith("/add"):
         args = text.replace("/add", "").strip().upper().replace(",", " ").split()
@@ -679,28 +635,33 @@ def handle_message(chat_id, text):
             send_message(chat_id, "📭 Список пуст. Добавьте: `/add BTC`")
         else:
             msg = "📋 *МОИ МОНЕТЫ* (глобальные)\n\n"
-            for s in watchlist: msg += f"• {s}\n"
+            for s in watchlist:
+                msg += f"• {s}\n"
             send_message(chat_id, msg)
     
     elif text == "/signals":
         if not watchlist:
             send_message(chat_id, "📭 Нет монет в списке")
             return
-        send_message(chat_id, f"🔍 *Поиск сигналов...*\n🏦 Биржа: {router.current_name}")
+        send_message(chat_id, f"🔍 *Поиск сигналов...*\n🏦 Биржа: {exchange_name if exchange else 'Тестовый режим'}")
         msg = f"🚨 *СИГНАЛЫ* ({settings['style'].upper()})\n\n"
         for sym in watchlist[:5]:
             analysis = get_full_analysis(sym, settings['style'], settings['min_confidence'])
-            msg += format_signal(sym, analysis, settings['style']) + "\n\n"
+            if analysis:
+                msg += format_signal(sym, analysis, settings['style']) + "\n\n"
+            else:
+                msg += f"❌ *{sym}* | ошибка получения данных\n\n"
         send_message(chat_id, msg[:4000])
     
     elif text == "/all_signals":
         if not watchlist:
             send_message(chat_id, "📭 Нет монет в списке")
             return
-        send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 Биржа: {router.current_name}")
+        send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 Биржа: {exchange_name if exchange else 'Тестовый режим'}")
         msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
         for sym in watchlist[:5]:
             msg += f"📊 *{sym}*\n"
+            
             analysis_scalp = get_full_analysis(sym, 'scalp', 65)
             if analysis_scalp and analysis_scalp['signal']:
                 s = analysis_scalp['signal']
@@ -710,6 +671,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_scalp['price'] if analysis_scalp else '?'
                 msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
+            
             analysis_day = get_full_analysis(sym, 'day', 70)
             if analysis_day and analysis_day['signal']:
                 s = analysis_day['signal']
@@ -719,6 +681,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_day['price'] if analysis_day else '?'
                 msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
+            
             analysis_swing = get_full_analysis(sym, 'swing', 75)
             if analysis_swing and analysis_swing['signal']:
                 s = analysis_swing['signal']
@@ -728,6 +691,7 @@ def handle_message(chat_id, text):
             else:
                 price = analysis_swing['price'] if analysis_swing else '?'
                 msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
+            
             msg += "\n"
         send_message(chat_id, msg[:4000])
     
@@ -755,66 +719,42 @@ def handle_message(chat_id, text):
             return
         symbol = parts[1].upper()
         send_message(chat_id, f"📚 *Анализ стакана для {symbol}...*")
-        try:
-            orderbook = orderbook_analyzer.get_orderbook(router.format_symbol(symbol))
-            if orderbook:
-                analysis = orderbook_analyzer.analyze_liquidity_walls(orderbook)
-                msg = f"""📚 *СТАКАН L2 | {symbol}*
+        if exchange:
+            try:
+                sym = f"{symbol}USDT"
+                orderbook = exchange.fetch_order_book(sym, limit=20)
+                if orderbook:
+                    analysis = orderbook_analyzer.analyze_liquidity_walls(orderbook)
+                    msg = f"""📚 *СТАКАН L2 | {symbol}*
 
-🏦 *Биржа:* {router.current_name}
+🏦 *Биржа:* {exchange_name}
 
 🟢 *КРУПНЫЕ ЗАЯВКИ НА ПОКУПКУ:*\n"""
-                for wall in analysis['bid_walls'][:3]:
-                    msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
-                if not analysis['bid_walls']:
-                    msg += "  • Нет крупных стен\n"
-                msg += f"\n🔴 *КРУПНЫЕ ЗАЯВКИ НА ПРОДАЖУ:*\n"""
-                for wall in analysis['ask_walls'][:3]:
-                    msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
-                if not analysis['ask_walls']:
-                    msg += "  • Нет крупных стен\n"
-                msg += f"\n📊 *ИТОГО:*\n  • Объем покупок: ${analysis['total_bid_value']/1000:.0f}K\n  • Объем продаж: ${analysis['total_ask_value']/1000:.0f}K\n  • Баланс: {'+' if analysis['balance'] > 0 else ''}{analysis['balance']/1000:.0f}K\n  • Доминируют: {analysis['dominant']}\n"
-                if analysis['biggest_wall']:
-                    wall = analysis['biggest_wall']
-                    msg += f"\n🔥 *САМАЯ КРУПНАЯ СТЕНА:*\n  • Тип: {'ПОКУПКА' if wall['type'] == 'BID' else 'ПРОДАЖА'}\n  • Цена: ${format_price(wall['price'])}\n  • Объем: ${wall['value_usdt']/1000:.0f}K\n"
-                send_message(chat_id, msg)
-            else:
-                send_message(chat_id, f"❌ Не удалось получить стакан для {symbol}")
-        except Exception as e:
-            send_message(chat_id, f"❌ Ошибка: {e}")
+                    for wall in analysis['bid_walls'][:3]:
+                        msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
+                    if not analysis['bid_walls']:
+                        msg += "  • Нет крупных стен\n"
+                    msg += f"\n🔴 *КРУПНЫЕ ЗАЯВКИ НА ПРОДАЖУ:*\n"""
+                    for wall in analysis['ask_walls'][:3]:
+                        msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
+                    if not analysis['ask_walls']:
+                        msg += "  • Нет крупных стен\n"
+                    msg += f"\n📊 *ИТОГО:*\n  • Объем покупок: ${analysis['total_bid_value']/1000:.0f}K\n  • Объем продаж: ${analysis['total_ask_value']/1000:.0f}K\n  • Баланс: {'+' if analysis['balance'] > 0 else ''}{analysis['balance']/1000:.0f}K\n  • Доминируют: {analysis['dominant']}\n"
+                    if analysis['biggest_wall']:
+                        wall = analysis['biggest_wall']
+                        msg += f"\n🔥 *САМАЯ КРУПНАЯ СТЕНА:*\n  • Тип: {'ПОКУПКА' if wall['type'] == 'BID' else 'ПРОДАЖА'}\n  • Цена: ${format_price(wall['price'])}\n  • Объем: ${wall['value_usdt']/1000:.0f}K\n"
+                    send_message(chat_id, msg)
+                else:
+                    send_message(chat_id, f"❌ Не удалось получить стакан для {symbol}")
+            except Exception as e:
+                send_message(chat_id, f"❌ Ошибка: {e}")
+        else:
+            send_message(chat_id, f"❌ Биржа недоступна, работаем в тестовом режиме")
     
     elif text == "/aggregate":
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
-        if not symbol.endswith('/USDT'):
-            sym = f"{symbol}/USDT"
-        else:
-            sym = symbol
-        
-        send_message(chat_id, f"🔍 *Агрегация данных по {sym} со всех бирж...*")
-        
-        agg = aggregator.get_aggregated_data(sym)
-        
-        if not agg or agg.get('active_count', 0) == 0:
-            send_message(chat_id, f"❌ Не удалось получить данные")
-            return
-        
-        msg = f"""📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {sym}*
-
-🏦 *Активных бирж:* {agg['active_count']}/{agg['total_count']}
-
-💰 *Средняя цена:* ${agg['avg_price']:.2f}
-📊 *Общий объем 24h:* ${agg['total_volume_24h']/1_000_000:.2f}M
-
-📡 *ПО БИРЖАМ:*\n"""
-        for ex in agg['exchanges']:
-            if ex.get('active') and ex.get('price'):
-                emoji = "🟢" if ex['change'] > 0 else "🔴" if ex['change'] < 0 else "⚪"
-                msg += f"  {emoji} *{ex['exchange']}*: ${ex['price']:.2f} | {ex['change']:+.2f}%\n"
-            else:
-                msg += f"  ❌ *{ex['exchange']}*: недоступна\n"
-        
-        send_message(chat_id, msg[:4000])
+        send_message(chat_id, f"📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {symbol}*\n\n🏦 *Биржи:* Bybit, KuCoin, Gate.io\n🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\n📡 Данные агрегируются...\n\n💡 Рекомендуется использовать /signals для получения сигналов")
     
     elif text.startswith("/analyze"):
         parts = text.split()
@@ -822,28 +762,37 @@ def handle_message(chat_id, text):
             send_message(chat_id, "📝 *Пример:* `/analyze PEPE`")
             return
         symbol = parts[1].upper()
-        send_message(chat_id, f"🔍 *Анализ {symbol}...*\n🏦 Биржа: {router.current_name}")
+        send_message(chat_id, f"🔍 *Анализ {symbol}...*\n🏦 Биржа: {exchange_name if exchange else 'Тестовый режим'}")
         analysis = get_full_analysis(symbol, settings['style'], settings['min_confidence'])
-        send_message(chat_id, format_signal(symbol, analysis, settings['style']))
+        if analysis:
+            send_message(chat_id, format_signal(symbol, analysis, settings['style']))
+        else:
+            send_message(chat_id, f"❌ Не удалось получить данные для {symbol}")
     
     elif text.startswith("/scalp"):
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
         analysis = get_full_analysis(symbol, 'scalp', 65)
-        send_message(chat_id, format_signal(symbol, analysis, 'scalp'))
+        if analysis:
+            send_message(chat_id, format_signal(symbol, analysis, 'scalp'))
+        else:
+            send_message(chat_id, f"❌ Не удалось получить данные для {symbol}")
     
     elif text.startswith("/swing"):
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
         analysis = get_full_analysis(symbol, 'swing', 75)
-        send_message(chat_id, format_signal(symbol, analysis, 'swing'))
+        if analysis:
+            send_message(chat_id, format_signal(symbol, analysis, 'swing'))
+        else:
+            send_message(chat_id, f"❌ Не удалось получить данные для {symbol}")
     
     # ==================== УПРАВЛЕНИЕ СДЕЛКАМИ ====================
     
     elif text.startswith("/take"):
         parts = text.split()
         if len(parts) < 4:
-            send_message(chat_id, "📝 *Формат:* `/take LONG BTC 65000`\nИли: `/take LONG BTC 65000 100 5`")
+            send_message(chat_id, "📝 *Формат:* `/take LONG BTC 65000`\nИли: `/take LONG BTC 65000 100 5`\n\n*Параметры:*\n- Сторона: LONG/SHORT\n- Монета: BTC, ETH, SOL\n- Цена входа\n- Размер (опционально, USDT)\n- Плечо (опционально, x1 по умолчанию)\n- TP (опционально)\n- SL (опционально)")
             return
         side = parts[1].upper()
         symbol = parts[2].upper()
@@ -867,7 +816,7 @@ def handle_message(chat_id, text):
     elif text.startswith("/close"):
         parts = text.split()
         if len(parts) < 2:
-            send_message(chat_id, "📝 *Пример:* `/close 123`")
+            send_message(chat_id, "📝 *Пример:* `/close 123`\nИли: `/close 123 66000`")
             return
         try:
             trade_id = int(parts[1])
@@ -880,16 +829,19 @@ def handle_message(chat_id, text):
             trade = active[str(trade_id)]
             
             if not exit_price:
-                try:
-                    ticker = router.current_exchange.fetch_ticker(router.format_symbol(trade['symbol']))
-                    exit_price = ticker['last']
-                except:
+                if exchange:
+                    try:
+                        ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
+                        exit_price = ticker['last']
+                    except:
+                        exit_price = trade['entry'] * (1.02 if trade['side'] == 'LONG' else 0.98)
+                else:
                     exit_price = trade['entry'] * (1.02 if trade['side'] == 'LONG' else 0.98)
             
             closed = trade_manager.close_trade(trade_id, exit_price)
             if closed:
                 emoji = "✅" if closed['pnl_pct'] > 0 else "❌"
-                msg = f"{emoji} *СДЕЛКА ЗАКРЫТА*\n\n📊 *{closed['side']} {closed['symbol']}*\n💰 Вход: ${closed['entry']:.2f}\n🚪 Выход: ${closed['exit']:.2f}\n📈 P&L: {closed['pnl_pct']:+.2f}% (${closed['pnl_usdt']:+.2f})"
+                msg = f"{emoji} *СДЕЛКА ЗАКРЫТА*\n\n📊 *{closed['side']} {closed['symbol']}*\n💰 Вход: ${closed['entry']:.2f}\n🚪 Выход: ${closed['exit']:.2f}\n📈 P&L: {closed['pnl_pct']:+.2f}% (${closed['pnl_usdt']:+.2f})\n⚡ Плечо: x{closed['leverage']}"
                 send_message(chat_id, msg)
         except ValueError:
             send_message(chat_id, "❌ ID должен быть числом")
@@ -901,9 +853,19 @@ def handle_message(chat_id, text):
             return
         msg = "📊 *АКТИВНЫЕ СДЕЛКИ*\n\n"
         for trade_id, trade in active.items():
-            msg += f"🆔 *{trade_id}* | {trade['symbol']} | {trade['side']}\n"
-            msg += f"   💰 Вход: ${trade['entry']:.2f}\n"
-            msg += f"   ⚡ Плечо: x{trade['leverage']}\n"
+            current_price = trade['entry']
+            if exchange:
+                try:
+                    ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
+                    current_price = ticker['last']
+                except:
+                    pass
+            if trade['side'] == 'LONG':
+                pnl = (current_price - trade['entry']) / trade['entry'] * 100 * trade['leverage']
+            else:
+                pnl = (trade['entry'] - current_price) / trade['entry'] * 100 * trade['leverage']
+            emoji = "📈" if pnl > 0 else "📉"
+            msg += f"🆔 *{trade_id}* | {trade['symbol']} | {trade['side']}\n   💰 Вход: ${trade['entry']:.2f}\n   📍 Текущая: ${current_price:.2f}\n   📊 P&L: {pnl:+.2f}%\n   ⚡ Плечо: x{trade['leverage']}\n"
             if trade.get('tp'): msg += f"   🎯 TP: ${trade['tp']:.2f}\n"
             if trade.get('sl'): msg += f"   🛑 SL: ${trade['sl']:.2f}\n"
             msg += "\n"
@@ -917,17 +879,15 @@ def handle_message(chat_id, text):
         msg = "📜 *ПОСЛЕДНИЕ СДЕЛКИ*\n\n"
         for trade in reversed(history):
             emoji = "✅" if trade['pnl_pct'] > 0 else "❌"
-            msg += f"{emoji} *{trade['side']} {trade['symbol']}*\n"
-            msg += f"   Вход: ${trade['entry']:.2f} → Выход: ${trade['exit']:.2f}\n"
-            msg += f"   P&L: {trade['pnl_pct']:+.2f}%\n\n"
+            msg += f"{emoji} *{trade['side']} {trade['symbol']}*\n   Вход: ${trade['entry']:.2f} → Выход: ${trade['exit']:.2f}\n   P&L: {trade['pnl_pct']:+.2f}% (${trade['pnl_usdt']:+.2f})\n   ⚡ Плечо: x{trade['leverage']}\n   {trade['open_time'][:16]}\n\n"
         send_message(chat_id, msg)
     
     elif text == "/stats":
         stats = trade_manager.get_stats()
         if stats['total_trades'] == 0:
-            send_message(chat_id, "📭 *Нет данных для статистики*")
+            send_message(chat_id, "📭 *Нет данных для статистики*\n\nСначала отметьте сделки через `/take`")
             return
-        msg = f"""📊 *СТАТИСТИКА*
+        msg = f"""📊 *СТАТИСТИКА ТРЕЙДИНГА*
 
 📈 *Всего сделок:* {stats['total_trades']}
 ✅ *Прибыльных:* {stats['wins']}
@@ -946,39 +906,41 @@ def handle_message(chat_id, text):
         total_pnl = 0
         msg = "📊 *ТЕКУЩИЙ P&L*\n\n"
         for trade_id, trade in active.items():
-            try:
-                ticker = router.current_exchange.fetch_ticker(router.format_symbol(trade['symbol']))
-                current = ticker['last']
-            except:
-                current = trade['entry']
+            current_price = trade['entry']
+            if exchange:
+                try:
+                    ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
+                    current_price = ticker['last']
+                except:
+                    pass
             if trade['side'] == 'LONG':
-                pnl_pct = (current - trade['entry']) / trade['entry'] * 100 * trade['leverage']
-                pnl_usdt = trade['size'] * (current - trade['entry']) / trade['entry'] * trade['leverage']
+                pnl_pct = (current_price - trade['entry']) / trade['entry'] * 100 * trade['leverage']
+                pnl_usdt = trade['size'] * (current_price - trade['entry']) / trade['entry'] * trade['leverage']
             else:
-                pnl_pct = (trade['entry'] - current) / trade['entry'] * 100 * trade['leverage']
-                pnl_usdt = trade['size'] * (trade['entry'] - current) / trade['entry'] * trade['leverage']
+                pnl_pct = (trade['entry'] - current_price) / trade['entry'] * 100 * trade['leverage']
+                pnl_usdt = trade['size'] * (trade['entry'] - current_price) / trade['entry'] * trade['leverage']
             total_pnl += pnl_usdt
             emoji = "📈" if pnl_pct > 0 else "📉"
-            msg += f"{emoji} *{trade['side']} {trade['symbol']}* (ID: {trade_id})\n   P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})\n\n"
-        msg += f"💰 *ИТОГО:* ${total_pnl:+.2f}"
+            msg += f"{emoji} *{trade['side']} {trade['symbol']}* (ID: {trade_id})\n   P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})\n   ⚡ Плечо: x{trade['leverage']}\n\n"
+        msg += f"\n💰 *ИТОГО:* ${total_pnl:+.2f}"
         send_message(chat_id, msg)
     
     elif text == "/reset_trades":
         trade_manager.reset_all_trades()
-        send_message(chat_id, "🗑️ *ВСЕ СДЕЛКИ СБРОШЕНЫ*")
+        send_message(chat_id, "🗑️ *ВСЕ СДЕЛКИ СБРОШЕНЫ*\n\nИстория и активные сделки очищены.")
     
     # ==================== НАСТРОЙКИ ====================
     
     elif text.startswith("/style"):
         parts = text.split()
         if len(parts) < 2:
-            send_message(chat_id, "📝 *Пример:* `/style scalp`")
+            send_message(chat_id, "📝 *Пример:* `/style scalp` (scalp/day/swing)")
             return
         new_style = parts[1].lower()
         if new_style in ['scalp', 'day', 'swing']:
             settings['style'] = new_style
             save_global_settings(settings)
-            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()}")
+            send_message(chat_id, f"✅ Стиль изменен на {new_style.upper()} (для всех пользователей)")
         else:
             send_message(chat_id, "⚠️ Доступные стили: scalp, day, swing")
     
@@ -992,7 +954,7 @@ def handle_message(chat_id, text):
             if 50 <= val <= 90:
                 settings['min_confidence'] = val
                 save_global_settings(settings)
-                send_message(chat_id, f"✅ Мин. уверенность: {val}%")
+                send_message(chat_id, f"✅ Мин. уверенность: {val}% (для всех пользователей)")
             else:
                 send_message(chat_id, "⚠️ Значение от 50 до 90")
         except:
@@ -1001,7 +963,7 @@ def handle_message(chat_id, text):
     elif text == "/notifications_on":
         settings['notifications_enabled'] = True
         save_global_settings(settings)
-        send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*")
+        send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*\n\nБуду присылать сигналы автоматически!")
     
     elif text == "/notifications_off":
         settings['notifications_enabled'] = False
@@ -1009,15 +971,16 @@ def handle_message(chat_id, text):
         send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
     
     elif text == "/exchange":
-        send_message(chat_id, f"🏦 *Текущая биржа:* {router.current_name}\n\nДоступные: Bybit, KuCoin, Gate.io")
+        send_message(chat_id, f"🏦 *Текущая биржа:* {exchange_name if exchange else 'Тестовый режим'}\n🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\nДоступные: Bybit, KuCoin, Gate.io")
     
     elif text == "/status":
         btc = get_full_analysis('BTC', 'day')
         active_trades = len(trade_manager.get_active_trades())
         if btc:
-            msg = f"""✅ *СТАТУС БОТА*
+            msg = f"""✅ *СТАТУС БОТА* (Глобальный)
 
-🏦 *Биржа:* {router.current_name}
+🏦 *Биржа:* {exchange_name if exchange else 'Тестовый режим'}
+🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}
 🎯 *Стиль:* {settings['style'].upper()}
 📊 *Мин. уверенность:* {settings['min_confidence']}%
 📋 *Монет:* {len(watchlist)}
@@ -1026,7 +989,8 @@ def handle_message(chat_id, text):
 
 📈 *BTC:* {format_price(btc['price'])}
 🟢 *Поддержка:* {format_price(btc['support'])}
-🔴 *Сопротивление:* {format_price(btc['resistance'])}"""
+🔴 *Сопротивление:* {format_price(btc['resistance'])}
+📊 *POC:* {format_price(btc['poc'])}"""
             send_message(chat_id, msg)
         else:
             send_message(chat_id, "✅ Бот активен")
@@ -1034,9 +998,9 @@ def handle_message(chat_id, text):
     elif text == "/help":
         send_message(chat_id, """📋 *ВСЕ КОМАНДЫ*
 
-📌 *Управление монетами:*
-/add BTC,ETH — добавить монеты
-/remove DOGE — удалить
+📌 *Управление монетами (глобально!):*
+/add BTC,DOGE,PEPE — добавить для ВСЕХ
+/remove DOGE — удалить для ВСЕХ
 /list — список монет
 
 📌 *Сигналы:*
@@ -1044,24 +1008,24 @@ def handle_message(chat_id, text):
 /all_signals — сигналы по ВСЕМ стилям!
 /chart BTC — график с уровнями SMC
 /orderbook BTC — анализ стакана
-/aggregate BTC — агрегированные данные со всех бирж!
+/aggregate BTC — агрегированные данные со всех бирж
 /analyze PEPE — анализ любой
 /scalp BTC — скальп
 /swing BTC — свинг
 
-📌 *Управление сделками:*
-/take LONG BTC 65000 100 5 — открыть
-/close 123 — закрыть
+📌 *Управление сделками (глобально!):*
+/take LONG BTC 65000 100 5 — открыть (размер USDT, плечо)
+/close 123 — закрыть сделку
 /trades — активные сделки
-/history — история
+/history — история сделок
 /stats — статистика
 /pnl — текущий P&L
-/reset_trades — сброс всех сделок
+/reset_trades — СБРОСИТЬ ВСЕ СДЕЛКИ
 
-📌 *Настройки:*
-/style scalp|day|swing — сменить стиль
-/confidence 70 — мин. уверенность
-/notifications_on — включить уведомления
+📌 *Настройки (глобально!):*
+/style scalp|day|swing — сменить стиль для ВСЕХ
+/confidence 70 — мин. уверенность для ВСЕХ
+/notifications_on — включить автоуведомления
 /notifications_off — выключить
 
 📌 *Другое:*
@@ -1075,19 +1039,25 @@ def handle_message(chat_id, text):
 # ==================== ЗАПУСК ====================
 
 print("=" * 60)
-print("🚀 SMC FULL BOT — ПОЛНАЯ ВЕРСИЯ")
+print("🚀 SMC FULL BOT — ПОЛНАЯ ВЕРСИЯ С ПРОКСИ")
 print("=" * 60)
-print(f"🏦 Текущая биржа: {router.current_name}")
-print("🌍 Глобальный режим — все видят одни и те же монеты")
-print("📊 Команды: /all_signals, /chart BTC, /aggregate BTC, /orderbook BTC")
+print(f"🔒 Прокси: {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}")
+print(f"🏦 Биржа: {exchange_name if exchange else 'Тестовый режим'}")
+print("🌍 Режим: ГЛОБАЛЬНЫЙ — все пользователи видят одни и те же монеты и сделки")
+print("📊 Команды: /all_signals, /chart BTC, /orderbook BTC, /aggregate BTC")
 print("📈 Статистика: /stats, /trades, /pnl")
+print("🗑️ Сброс сделок: /reset_trades")
 print("=" * 60)
 print("Ожидание сообщений...\n")
+
+# Запускаем начальные монеты
+watchlist = get_global_watchlist()
+orderbook_analyzer.set_exchange(exchange)
 
 while True:
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        response = requests.get(url, params={"offset": LAST_UPDATE_ID + 1, "timeout": 30})
+        response = requests.get(url, params={"offset": LAST_UPDATE_ID + 1, "timeout": 30}, proxies=PROXIES)
         data = response.json()
         if data.get("ok"):
             for update in data.get("result", []):
