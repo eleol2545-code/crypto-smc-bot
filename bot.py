@@ -6,14 +6,15 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
-print("=" * 70)
-print("🚀 БЭКТЕСТ SMC/ICT СТРАТЕГИИ НА 6 МОНЕТАХ")
-print("=" * 70)
+print("=" * 80)
+print("🚀 РАСШИРЕННЫЙ БЭКТЕСТ SMC/ICT СТРАТЕГИИ")
+print("   RSI оптимизация | SL/TP 1:2 | Плечо 50x | Все таймфреймы")
+print("=" * 80)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 INITIAL_BALANCE = 100
 COMMISSION = 0.0004
-TIMEFRAME = '1h'
+LEVERAGE = 50  # Плечо 50x
 DAYS = 180
 
 # 6 монет для тестирования
@@ -26,13 +27,20 @@ SYMBOLS = [
     {'symbol': 'WIF/USDT', 'name': 'WIF'},
 ]
 
-# ==================== ОПТИМИЗИРУЕМЫЕ ПАРАМЕТРЫ ====================
-OPTIMIZATIONS = [
-    {'name': 'OPT1_стандарт', 'rsi_low': 30, 'rsi_high': 70, 'sl_pct': 0.015, 'tp_pct': 0.03, 'volume_mult': 1.5},
-    {'name': 'OPT2_агрессивный', 'rsi_low': 25, 'rsi_high': 75, 'sl_pct': 0.01, 'tp_pct': 0.02, 'volume_mult': 1.3},
-    {'name': 'OPT3_консервативный', 'rsi_low': 35, 'rsi_high': 65, 'sl_pct': 0.02, 'tp_pct': 0.04, 'volume_mult': 1.8},
-    {'name': 'OPT4_широкий_стоп', 'rsi_low': 28, 'rsi_high': 72, 'sl_pct': 0.025, 'tp_pct': 0.05, 'volume_mult': 1.5},
-    {'name': 'OPT5_узкий_стоп', 'rsi_low': 32, 'rsi_high': 68, 'sl_pct': 0.012, 'tp_pct': 0.025, 'volume_mult': 1.4},
+# Таймфреймы и стили
+TIMEFRAMES = [
+    {'name': 'SCALP_5m', 'timeframe': '5m', 'limit': 2000, 'risk_pct': 0.008, 'reward_pct': 0.016, 'min_conf': 65},
+    {'name': 'SCALP_15m', 'timeframe': '15m', 'limit': 2000, 'risk_pct': 0.008, 'reward_pct': 0.016, 'min_conf': 65},
+    {'name': 'DAY_1h', 'timeframe': '1h', 'limit': 1500, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
+    {'name': 'DAY_4h', 'timeframe': '4h', 'limit': 1000, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
+    {'name': 'SWING_1d', 'timeframe': '1d', 'limit': 500, 'risk_pct': 0.025, 'reward_pct': 0.05, 'min_conf': 75},
+]
+
+# RSI пороги для тестирования
+RSI_OPTIONS = [
+    {'name': 'RSI_28_72', 'low': 28, 'high': 72},
+    {'name': 'RSI_30_70', 'low': 30, 'high': 70},
+    {'name': 'RSI_32_68', 'low': 32, 'high': 68},
 ]
 
 # ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ ====================
@@ -110,250 +118,294 @@ def find_order_blocks(prices, volumes, window=5):
     return bullish_ob, bearish_ob
 
 # ==================== ЗАГРУЗКА ДАННЫХ ====================
-print("\n📥 ЗАГРУЗКА ДАННЫХ ДЛЯ 6 МОНЕТ...")
+print("\n📥 ЗАГРУЗКА ДАННЫХ...")
 
-symbols_data = {}
+all_data = {}
 
 for sym in SYMBOLS:
     print(f"\n   Загружаем {sym['name']}...")
-    try:
-        limit = int(DAYS * 24) + 200
-        ohlcv = exchange.fetch_ohlcv(sym['symbol'], TIMEFRAME, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        symbols_data[sym['name']] = {
-            'df': df,
-            'prices': df['close'].values,
-            'volumes': df['volume'].values,
-            'highs': df['high'].values,
-            'lows': df['low'].values
-        }
-        print(f"      ✅ Загружено {len(df)} свечей")
-    except Exception as e:
-        print(f"      ❌ Ошибка: {e}")
-
-# ==================== ТЕСТИРОВАНИЕ ====================
-print("\n🎯 ЗАПУСК БЭКТЕСТА С ОПТИМИЗАЦИЕЙ ПАРАМЕТРОВ...")
-
-all_results = {}
-
-for opt in OPTIMIZATIONS:
-    print(f"\n{'='*70}")
-    print(f"📊 ТЕСТИРУЕМ: {opt['name']}")
-    print(f"   RSI: {opt['rsi_low']}/{opt['rsi_high']} | SL: {opt['sl_pct']*100:.1f}% | TP: {opt['tp_pct']*100:.1f}% | Объем: {opt['volume_mult']}x")
-    print(f"{'='*70}")
+    sym_data = {}
     
-    results_by_symbol = {}
-    total_trades_all = 0
-    total_pnl_all = 0
-    
-    for sym_name, data in symbols_data.items():
-        df = data['df']
-        prices = data['prices']
-        volumes = data['volumes']
-        highs = data['highs']
-        lows = data['lows']
-        
-        # Рассчитываем индикаторы
-        rsi = calculate_rsi(prices)
-        macd_line, macd_signal, macd_hist = calculate_macd(prices)
-        bb_upper, bb_middle, bb_lower = calculate_bollinger(prices)
-        stoch_k, stoch_d = calculate_stochastic(prices, highs, lows)
-        ema_9 = calculate_ema(prices, 9)
-        ema_21 = calculate_ema(prices, 21)
-        ema_50 = calculate_ema(prices, 50)
-        vwap = calculate_vwap(prices, volumes)
-        volume_ratio = volumes / (np.mean(volumes[max(0, len(volumes)-20):]) + 0.0001)
-        bullish_ob, bearish_ob = find_order_blocks(prices, volumes)
-        
-        # Симуляция
-        balance = INITIAL_BALANCE
-        position = None
-        trades = []
-        
-        for i in range(100, len(prices) - 1):
-            price = prices[i]
-            
-            # Закрытие позиции
-            if position:
-                if position['side'] == 'LONG':
-                    if price <= position['sl']:
-                        pnl_pct = (position['sl'] - position['entry']) / position['entry'] * 100
-                        pnl_usdt = position['size'] * (position['sl'] - position['entry']) / position['entry']
-                        pnl_usdt -= position['size'] * COMMISSION * 2
-                        balance += pnl_usdt
-                        trades.append({'side': 'LONG', 'entry': position['entry'], 'exit': position['sl'],
-                                       'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'SL'})
-                        position = None
-                    elif price >= position['tp']:
-                        pnl_pct = (position['tp'] - position['entry']) / position['entry'] * 100
-                        pnl_usdt = position['size'] * (position['tp'] - position['entry']) / position['entry']
-                        pnl_usdt -= position['size'] * COMMISSION * 2
-                        balance += pnl_usdt
-                        trades.append({'side': 'LONG', 'entry': position['entry'], 'exit': position['tp'],
-                                       'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'TP'})
-                        position = None
-                else:
-                    if price >= position['sl']:
-                        pnl_pct = (position['entry'] - position['sl']) / position['entry'] * 100
-                        pnl_usdt = position['size'] * (position['entry'] - position['sl']) / position['entry']
-                        pnl_usdt -= position['size'] * COMMISSION * 2
-                        balance += pnl_usdt
-                        trades.append({'side': 'SHORT', 'entry': position['entry'], 'exit': position['sl'],
-                                       'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'SL'})
-                        position = None
-                    elif price <= position['tp']:
-                        pnl_pct = (position['entry'] - position['tp']) / position['entry'] * 100
-                        pnl_usdt = position['size'] * (position['entry'] - position['tp']) / position['entry']
-                        pnl_usdt -= position['size'] * COMMISSION * 2
-                        balance += pnl_usdt
-                        trades.append({'side': 'SHORT', 'entry': position['entry'], 'exit': position['tp'],
-                                       'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'TP'})
-                        position = None
-            
-            # Генерация сигнала
-            if not position:
-                score = 0
-                signal_type = None
-                
-                if bullish_ob[i] == 1:
-                    score += 20
-                    signal_type = 'LONG'
-                if bearish_ob[i] == 1:
-                    score += 20
-                    signal_type = 'SHORT'
-                
-                if rsi[i] < opt['rsi_low']:
-                    score += 15
-                    if not signal_type: signal_type = 'LONG'
-                elif rsi[i] > opt['rsi_high']:
-                    score += 15
-                    if not signal_type: signal_type = 'SHORT'
-                
-                if macd_hist[i] > 0 and signal_type == 'LONG':
-                    score += 15
-                elif macd_hist[i] < 0 and signal_type == 'SHORT':
-                    score += 15
-                
-                if price <= bb_lower[i] * 1.005:
-                    score += 15
-                    if not signal_type: signal_type = 'LONG'
-                elif price >= bb_upper[i] * 0.995:
-                    score += 15
-                    if not signal_type: signal_type = 'SHORT'
-                
-                if stoch_k[i] < 20:
-                    score += 15
-                    if not signal_type: signal_type = 'LONG'
-                elif stoch_k[i] > 80:
-                    score += 15
-                    if not signal_type: signal_type = 'SHORT'
-                
-                if ema_9[i] > ema_21[i] and ema_21[i] > ema_50[i]:
-                    score += 10
-                    if signal_type == 'LONG': score += 5
-                elif ema_9[i] < ema_21[i] and ema_21[i] < ema_50[i]:
-                    score += 10
-                    if signal_type == 'SHORT': score += 5
-                
-                if volume_ratio[i] > opt['volume_mult']:
-                    score += 10
-                
-                if price < vwap[i] and signal_type == 'LONG':
-                    score += 10
-                elif price > vwap[i] and signal_type == 'SHORT':
-                    score += 10
-                
-                confidence = min(100, score)
-                
-                if signal_type and confidence >= 65:
-                    entry = price
-                    size = balance * 0.01
-                    
-                    if signal_type == 'LONG':
-                        sl = entry * (1 - opt['sl_pct'])
-                        tp = entry * (1 + opt['tp_pct'])
-                    else:
-                        sl = entry * (1 + opt['sl_pct'])
-                        tp = entry * (1 - opt['tp_pct'])
-                    
-                    position = {
-                        'side': signal_type,
-                        'entry': entry,
-                        'sl': sl,
-                        'tp': tp,
-                        'size': size
-                    }
-                    balance -= size * COMMISSION
-        
-        # Статистика по монете
-        if trades:
-            trades_df = pd.DataFrame(trades)
-            wins = trades_df[trades_df['pnl_pct'] > 0]
-            losses = trades_df[trades_df['pnl_pct'] <= 0]
-            
-            total_pnl = (balance - INITIAL_BALANCE) / INITIAL_BALANCE * 100
-            results_by_symbol[sym_name] = {
-                'total_trades': len(trades),
-                'wins': len(wins),
-                'win_rate': round(len(wins) / len(trades) * 100, 2),
-                'pnl_pct': round(total_pnl, 2),
-                'profit_factor': round(abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)), 2)
+    for tf in TIMEFRAMES:
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym['symbol'], tf['timeframe'], limit=tf['limit'])
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            sym_data[tf['name']] = {
+                'df': df,
+                'prices': df['close'].values,
+                'volumes': df['volume'].values,
+                'highs': df['high'].values,
+                'lows': df['low'].values,
+                'tf_config': tf
             }
-            total_trades_all += len(trades)
-            total_pnl_all += total_pnl
-        else:
-            results_by_symbol[sym_name] = {
-                'total_trades': 0, 'wins': 0, 'win_rate': 0,
-                'pnl_pct': 0, 'profit_factor': 0
-            }
+            print(f"      ✅ {tf['name']}: {len(df)} свечей")
+        except Exception as e:
+            print(f"      ❌ {tf['name']} ошибка: {e}")
     
-    all_results[opt['name']] = {
-        'by_symbol': results_by_symbol,
-        'total_trades': total_trades_all,
-        'total_pnl': round(total_pnl_all / len(symbols_data), 2)
-    }
+    all_data[sym['name']] = sym_data
+
+# ==================== СИМУЛЯЦИЯ ====================
+print("\n🎯 ЗАПУСК БЭКТЕСТА...")
+
+all_results = []
+
+for rsi_opt in RSI_OPTIONS:
+    print(f"\n{'='*80}")
+    print(f"📊 ТЕСТИРУЕМ RSI: {rsi_opt['name']} ({rsi_opt['low']}/{rsi_opt['high']})")
+    print(f"{'='*80}")
+    
+    for tf in TIMEFRAMES:
+        print(f"\n   📈 {tf['name']} | SL: {tf['risk_pct']*100:.1f}% | TP: {tf['reward_pct']*100:.1f}% | RR 1:{tf['reward_pct']/tf['risk_pct']:.1f}")
+        print(f"   {'-'*60}")
+        
+        for sym_name in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
+            if sym_name not in all_data or tf['name'] not in all_data[sym_name]:
+                continue
+                
+            data = all_data[sym_name][tf['name']]
+            df = data['df']
+            prices = data['prices']
+            volumes = data['volumes']
+            highs = data['highs']
+            lows = data['lows']
+            
+            # Рассчитываем индикаторы
+            rsi = calculate_rsi(prices)
+            macd_line, macd_signal, macd_hist = calculate_macd(prices)
+            bb_upper, bb_middle, bb_lower = calculate_bollinger(prices)
+            stoch_k, stoch_d = calculate_stochastic(prices, highs, lows)
+            ema_9 = calculate_ema(prices, 9)
+            ema_21 = calculate_ema(prices, 21)
+            ema_50 = calculate_ema(prices, 50)
+            vwap = calculate_vwap(prices, volumes)
+            volume_ratio = volumes / (np.mean(volumes[max(0, len(volumes)-20):]) + 0.0001)
+            bullish_ob, bearish_ob = find_order_blocks(prices, volumes)
+            
+            # Симуляция с плечом 50x
+            balance = INITIAL_BALANCE
+            position = None
+            trades = []
+            
+            for i in range(100, len(prices) - 1):
+                price = prices[i]
+                
+                # Закрытие позиции
+                if position:
+                    if position['side'] == 'LONG':
+                        if price <= position['sl']:
+                            pnl_pct = (position['sl'] - position['entry']) / position['entry'] * 100 * LEVERAGE
+                            pnl_usdt = position['size'] * (position['sl'] - position['entry']) / position['entry'] * LEVERAGE
+                            pnl_usdt -= position['size'] * COMMISSION * 2
+                            balance += pnl_usdt
+                            trades.append({'side': 'LONG', 'entry': position['entry'], 'exit': position['sl'],
+                                           'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'SL'})
+                            position = None
+                        elif price >= position['tp']:
+                            pnl_pct = (position['tp'] - position['entry']) / position['entry'] * 100 * LEVERAGE
+                            pnl_usdt = position['size'] * (position['tp'] - position['entry']) / position['entry'] * LEVERAGE
+                            pnl_usdt -= position['size'] * COMMISSION * 2
+                            balance += pnl_usdt
+                            trades.append({'side': 'LONG', 'entry': position['entry'], 'exit': position['tp'],
+                                           'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'TP'})
+                            position = None
+                    else:  # SHORT
+                        if price >= position['sl']:
+                            pnl_pct = (position['entry'] - position['sl']) / position['entry'] * 100 * LEVERAGE
+                            pnl_usdt = position['size'] * (position['entry'] - position['sl']) / position['entry'] * LEVERAGE
+                            pnl_usdt -= position['size'] * COMMISSION * 2
+                            balance += pnl_usdt
+                            trades.append({'side': 'SHORT', 'entry': position['entry'], 'exit': position['sl'],
+                                           'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'SL'})
+                            position = None
+                        elif price <= position['tp']:
+                            pnl_pct = (position['entry'] - position['tp']) / position['entry'] * 100 * LEVERAGE
+                            pnl_usdt = position['size'] * (position['entry'] - position['tp']) / position['entry'] * LEVERAGE
+                            pnl_usdt -= position['size'] * COMMISSION * 2
+                            balance += pnl_usdt
+                            trades.append({'side': 'SHORT', 'entry': position['entry'], 'exit': position['tp'],
+                                           'pnl_pct': pnl_pct, 'pnl_usdt': pnl_usdt, 'reason': 'TP'})
+                            position = None
+                
+                # Генерация сигнала
+                if not position:
+                    score = 0
+                    signal_type = None
+                    
+                    if bullish_ob[i] == 1:
+                        score += 20
+                        signal_type = 'LONG'
+                    if bearish_ob[i] == 1:
+                        score += 20
+                        signal_type = 'SHORT'
+                    
+                    if rsi[i] < rsi_opt['low']:
+                        score += 15
+                        if not signal_type: signal_type = 'LONG'
+                    elif rsi[i] > rsi_opt['high']:
+                        score += 15
+                        if not signal_type: signal_type = 'SHORT'
+                    
+                    if macd_hist[i] > 0 and signal_type == 'LONG':
+                        score += 15
+                    elif macd_hist[i] < 0 and signal_type == 'SHORT':
+                        score += 15
+                    
+                    if price <= bb_lower[i] * 1.005:
+                        score += 15
+                        if not signal_type: signal_type = 'LONG'
+                    elif price >= bb_upper[i] * 0.995:
+                        score += 15
+                        if not signal_type: signal_type = 'SHORT'
+                    
+                    if stoch_k[i] < 20:
+                        score += 15
+                        if not signal_type: signal_type = 'LONG'
+                    elif stoch_k[i] > 80:
+                        score += 15
+                        if not signal_type: signal_type = 'SHORT'
+                    
+                    if ema_9[i] > ema_21[i] and ema_21[i] > ema_50[i]:
+                        score += 10
+                        if signal_type == 'LONG': score += 5
+                    elif ema_9[i] < ema_21[i] and ema_21[i] < ema_50[i]:
+                        score += 10
+                        if signal_type == 'SHORT': score += 5
+                    
+                    if volume_ratio[i] > 1.5:
+                        score += 10
+                    
+                    if price < vwap[i] and signal_type == 'LONG':
+                        score += 10
+                    elif price > vwap[i] and signal_type == 'SHORT':
+                        score += 10
+                    
+                    confidence = min(100, score)
+                    
+                    if signal_type and confidence >= tf['min_conf']:
+                        entry = price
+                        size = balance * 0.01  # 1% риск
+                        
+                        if signal_type == 'LONG':
+                            sl = entry * (1 - tf['risk_pct'])
+                            tp = entry * (1 + tf['reward_pct'])
+                        else:
+                            sl = entry * (1 + tf['risk_pct'])
+                            tp = entry * (1 - tf['reward_pct'])
+                        
+                        position = {
+                            'side': signal_type,
+                            'entry': entry,
+                            'sl': sl,
+                            'tp': tp,
+                            'size': size
+                        }
+                        balance -= size * COMMISSION
+            
+            # Статистика
+            if trades:
+                trades_df = pd.DataFrame(trades)
+                wins = trades_df[trades_df['pnl_pct'] > 0]
+                losses = trades_df[trades_df['pnl_pct'] <= 0]
+                
+                total_pnl = (balance - INITIAL_BALANCE) / INITIAL_BALANCE * 100
+                all_results.append({
+                    'rsi': rsi_opt['name'],
+                    'timeframe': tf['name'],
+                    'symbol': sym_name,
+                    'total_trades': len(trades),
+                    'wins': len(wins),
+                    'losses': len(losses),
+                    'win_rate': round(len(wins) / len(trades) * 100, 2),
+                    'pnl_pct': round(total_pnl, 2),
+                    'pnl_usdt': round(balance - INITIAL_BALANCE, 2),
+                    'final_balance': round(balance, 2),
+                    'profit_factor': round(abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)), 2),
+                    'avg_win': round(wins['pnl_pct'].mean(), 2) if len(wins) > 0 else 0,
+                    'avg_loss': round(abs(losses['pnl_pct'].mean()), 2) if len(losses) > 0 else 0
+                })
+                
+                # Вывод по монете
+                print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f}")
+            else:
+                all_results.append({
+                    'rsi': rsi_opt['name'],
+                    'timeframe': tf['name'],
+                    'symbol': sym_name,
+                    'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
+                    'pnl_pct': 0, 'pnl_usdt': 0, 'final_balance': INITIAL_BALANCE,
+                    'profit_factor': 0, 'avg_win': 0, 'avg_loss': 0
+                })
+                print(f"      {sym_name:4} | Сделок:0 | Нет сигналов")
 
 # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
-print("\n" + "=" * 80)
-print("📊 РЕЗУЛЬТАТЫ БЭКТЕСТА ПО 6 МОНЕТАМ")
-print("=" * 80)
+print("\n" + "=" * 100)
+print("📊 ИТОГОВЫЕ РЕЗУЛЬТАТЫ БЭКТЕСТА (Плечо 50x)")
+print("=" * 100)
 
-print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐")
-print("│ Оптимизация     │ BTC    │ ETH    │ SOL    │ SAND   │ TIA    │ WIF    │ Всего  │ Средняя P&L │")
-print("├─────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+# Сводная таблица по RSI и таймфреймам
+print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐")
+print("│ RSI вариант   │ Таймфрейм  │ Сделок │ Win Rate │ Сред. P&L │ Средний PF │ Лучшая монета │ Худшая монета │")
+print("├─────────────────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
-for opt_name, data in all_results.items():
-    by_sym = data['by_symbol']
-    row = f"│ {opt_name:<15} │ "
-    for sym in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
-        pnl = by_sym.get(sym, {}).get('pnl_pct', 0)
-        color = '+' if pnl > 0 else ''
-        row += f"{color}{pnl:>6.2f}% │ "
-    row += f"{data['total_trades']:>6} │ {data['total_pnl']:>10.2f}% │"
-    print(row)
+for rsi_opt in RSI_OPTIONS:
+    for tf in TIMEFRAMES:
+        tf_results = [r for r in all_results if r['rsi'] == rsi_opt['name'] and r['timeframe'] == tf['name'] and r['total_trades'] > 0]
+        if tf_results:
+            avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
+            avg_pf = sum(r['profit_factor'] for r in tf_results) / len(tf_results)
+            total_trades = sum(r['total_trades'] for r in tf_results)
+            avg_win_rate = sum(r['win_rate'] for r in tf_results) / len(tf_results)
+            
+            best_symbol = max(tf_results, key=lambda x: x['pnl_pct'])['symbol']
+            worst_symbol = min(tf_results, key=lambda x: x['pnl_pct'])['symbol']
+            
+            print(f"│ {rsi_opt['name']:<12} │ {tf['name']:<10} │ {total_trades:6} │ {avg_win_rate:7.1f}% │ {avg_pnl:+8.2f}% │ {avg_pf:9.2f} │ {best_symbol:11} │ {worst_symbol:12} │")
 
-print("└─────────────────────────────────────────────────────────────────────────────────────────────────────┘")
+print("└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
 
-# Находим лучшую оптимизацию
-best_opt = max(all_results.items(), key=lambda x: x[1]['total_pnl'])
-print(f"\n🏆 ЛУЧШАЯ ОПТИМИЗАЦИЯ: {best_opt[0]}")
-print(f"   • Средняя прибыль по 6 монетам: {best_opt[1]['total_pnl']:.2f}%")
-print(f"   • Всего сделок: {best_opt[1]['total_trades']}")
+# Лучшие результаты по монетам
+print("\n🏆 ТОП-10 ЛУЧШИХ РЕЗУЛЬТАТОВ ПО МОНЕТАМ:")
+print("-" * 100)
+top_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'], reverse=True)[:10]
+print(f"{'№':<3} {'RSI':<12} {'Таймфрейм':<10} {'Монета':<6} {'Сделок':<7} {'Win Rate':<9} {'P&L':<10} {'Profit Factor':<14}")
+print("-" * 100)
+for i, r in enumerate(top_results, 1):
+    print(f"{i:<3} {r['rsi']:<12} {r['timeframe']:<10} {r['symbol']:<6} {r['total_trades']:<7} {r['win_rate']:<8.1f}% {r['pnl_pct']:+8.2f}% {r['profit_factor']:<14.2f}")
 
-# Детализация по монетам для лучшей оптимизации
-print(f"\n📈 ДЕТАЛИЗАЦИЯ ПО МОНЕТАМ ({best_opt[0]}):")
-print("-" * 70)
-print(f"{'Монета':<8} {'Сделок':<8} {'Win Rate':<10} {'P&L':<12} {'Profit Factor':<15}")
-print("-" * 70)
+# Худшие результаты
+print("\n💀 ТОП-10 ХУДШИХ РЕЗУЛЬТАТОВ:")
+print("-" * 100)
+worst_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'])[:10]
+print(f"{'№':<3} {'RSI':<12} {'Таймфрейм':<10} {'Монета':<6} {'Сделок':<7} {'Win Rate':<9} {'P&L':<10} {'Profit Factor':<14}")
+print("-" * 100)
+for i, r in enumerate(worst_results, 1):
+    print(f"{i:<3} {r['rsi']:<12} {r['timeframe']:<10} {r['symbol']:<6} {r['total_trades']:<7} {r['win_rate']:<8.1f}% {r['pnl_pct']:+8.2f}% {r['profit_factor']:<14.2f}")
 
-best_data = best_opt[1]['by_symbol']
-for sym in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
-    data = best_data.get(sym, {})
-    pnl = data.get('pnl_pct', 0)
-    pnl_str = f"+{pnl}%" if pnl > 0 else f"{pnl}%"
-    print(f"{sym:<8} {data.get('total_trades', 0):<8} {data.get('win_rate', 0):<9}% {pnl_str:<12} {data.get('profit_factor', 0):<15}")
+# Статистика по таймфреймам
+print("\n📊 СТАТИСТИКА ПО ТАЙМФРЕЙМАМ (средняя по всем RSI и монетам):")
+print("-" * 80)
+for tf in TIMEFRAMES:
+    tf_results = [r for r in all_results if r['timeframe'] == tf['name'] and r['total_trades'] > 0]
+    if tf_results:
+        avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
+        total_trades = sum(r['total_trades'] for r in tf_results)
+        positive_count = len([r for r in tf_results if r['pnl_pct'] > 0])
+        print(f"   {tf['name']:<10} | Сделок: {total_trades:5} | Прибыльных монет: {positive_count}/{len(tf_results)} | Средняя P&L: {avg_pnl:+7.2f}%")
 
-print("\n" + "=" * 80)
+# Лучшая комбинация
+best = max(all_results, key=lambda x: x['pnl_pct'])
+print(f"\n🎯 ЛУЧШАЯ КОМБИНАЦИЯ:")
+print(f"   • RSI: {best['rsi']} ({[opt for opt in RSI_OPTIONS if opt['name'] == best['rsi']][0]['low']}/{best['rsi'].split('_')[1]})")
+print(f"   • Таймфрейм: {best['timeframe']}")
+print(f"   • Монета: {best['symbol']}")
+print(f"   • Сделок: {best['total_trades']}")
+print(f"   • Win Rate: {best['win_rate']}%")
+print(f"   • Прибыль: {best['pnl_pct']:.2f}% (${best['pnl_usdt']:.2f})")
+print(f"   • Profit Factor: {best['profit_factor']}")
+print(f"   • Средняя прибыль: {best['avg_win']:.2f}%")
+print(f"   • Средний убыток: {best['avg_loss']:.2f}%")
+
+print("\n" + "=" * 100)
 print("✅ БЭКТЕСТ ЗАВЕРШЕН")
-print("=" * 80)
+print("=" * 100)
