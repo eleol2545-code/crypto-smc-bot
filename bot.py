@@ -7,17 +7,18 @@ import warnings
 warnings.filterwarnings('ignore')
 
 print("=" * 80)
-print("🚀 РАСШИРЕННЫЙ БЭКТЕСТ SMC/ICT СТРАТЕГИИ")
-print("   RSI оптимизация | SL/TP 1:2 | Плечо 50x | Все таймфреймы")
+print("🚀 УЛУЧШЕННЫЙ БЭКТЕСТ SMC/ICT СТРАТЕГИИ")
+print("   ATR динамический SL/TP | ADX фильтр | Временные фильтры | Объемный анализ")
+print("   6 монет: BTC, ETH, SOL, SAND, TIA, WIF")
 print("=" * 80)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 INITIAL_BALANCE = 100
 COMMISSION = 0.0004
-LEVERAGE = 50  # Плечо 50x
+LEVERAGE = 50
 DAYS = 180
 
-# 6 монет для тестирования
+# 6 монет
 SYMBOLS = [
     {'symbol': 'BTC/USDT', 'name': 'BTC'},
     {'symbol': 'ETH/USDT', 'name': 'ETH'},
@@ -27,34 +28,54 @@ SYMBOLS = [
     {'symbol': 'WIF/USDT', 'name': 'WIF'},
 ]
 
-# Таймфреймы и стили
+# Таймфреймы (DAY_1h показал лучшие результаты)
 TIMEFRAMES = [
-    {'name': 'SCALP_5m', 'timeframe': '5m', 'limit': 2000, 'risk_pct': 0.008, 'reward_pct': 0.016, 'min_conf': 65},
-    {'name': 'SCALP_15m', 'timeframe': '15m', 'limit': 2000, 'risk_pct': 0.008, 'reward_pct': 0.016, 'min_conf': 65},
-    {'name': 'DAY_1h', 'timeframe': '1h', 'limit': 1500, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
-    {'name': 'DAY_4h', 'timeframe': '4h', 'limit': 1000, 'risk_pct': 0.015, 'reward_pct': 0.03, 'min_conf': 70},
-    {'name': 'SWING_1d', 'timeframe': '1d', 'limit': 500, 'risk_pct': 0.025, 'reward_pct': 0.05, 'min_conf': 75},
+    {'name': 'DAY_1h', 'timeframe': '1h', 'limit': 1500, 'min_conf': 70},
 ]
 
-# RSI пороги для тестирования
+# RSI пороги (лучший из прошлого теста)
 RSI_OPTIONS = [
     {'name': 'RSI_28_72', 'low': 28, 'high': 72},
-    {'name': 'RSI_30_70', 'low': 30, 'high': 70},
-    {'name': 'RSI_32_68', 'low': 32, 'high': 68},
 ]
 
-# ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ ====================
-print("\n📡 ПОДКЛЮЧЕНИЕ К KUCOIN...")
-exchange = ccxt.kucoin({'enableRateLimit': True})
+# ==================== НОВЫЕ ИНДИКАТОРЫ ====================
 
-try:
-    ticker = exchange.fetch_ticker('BTC/USDT')
-    print(f"   ✅ KuCoin подключена! BTC: ${ticker['last']:.2f}")
-except Exception as e:
-    print(f"   ❌ Ошибка: {e}")
-    exit(1)
+def calculate_atr(highs, lows, closes, period=14):
+    """Average True Range - волатильность"""
+    tr = np.zeros(len(closes))
+    for i in range(1, len(closes)):
+        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+    
+    atr = np.zeros(len(closes))
+    atr[period] = np.mean(tr[1:period+1])
+    for i in range(period+1, len(closes)):
+        atr[i] = (atr[i-1] * (period - 1) + tr[i]) / period
+    return atr
 
-# ==================== SMC/ICT ИНДИКАТОРЫ ====================
+def calculate_adx(highs, lows, closes, period=14):
+    """Average Directional Index - сила тренда"""
+    tr = np.zeros(len(closes))
+    for i in range(1, len(closes)):
+        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+    
+    up_move = np.zeros(len(closes))
+    down_move = np.zeros(len(closes))
+    for i in range(1, len(closes)):
+        up_move[i] = highs[i] - highs[i-1]
+        down_move[i] = lows[i-1] - lows[i]
+    
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    
+    atr = calculate_atr(highs, lows, closes, period)
+    
+    plus_di = 100 * np.where(atr > 0, np.convolve(plus_dm, np.ones(period)/period, mode='same'), 0)
+    minus_di = 100 * np.where(atr > 0, np.convolve(minus_dm, np.ones(period)/period, mode='same'), 0)
+    
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 0.0001)
+    adx = np.convolve(dx, np.ones(period)/period, mode='same')
+    return adx
+
 def calculate_rsi(prices, period=14):
     delta = np.diff(prices)
     gain = np.where(delta > 0, delta, 0)
@@ -117,8 +138,25 @@ def find_order_blocks(prices, volumes, window=5):
                     bearish_ob[j] = 1
     return bullish_ob, bearish_ob
 
+def is_active_session(timestamp):
+    """Проверка, активная ли торговая сессия (Лондон + Нью-Йорк)"""
+    hour = timestamp.hour
+    # Лондон: 10:00-14:00, Нью-Йорк: 15:00-20:00 (МСК)
+    return (10 <= hour <= 14) or (15 <= hour <= 20)
+
+# ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ ====================
+print("\n📡 ПОДКЛЮЧЕНИЕ К KUCOIN...")
+exchange = ccxt.kucoin({'enableRateLimit': True})
+
+try:
+    ticker = exchange.fetch_ticker('BTC/USDT')
+    print(f"   ✅ KuCoin подключена! BTC: ${ticker['last']:.2f}")
+except Exception as e:
+    print(f"   ❌ Ошибка: {e}")
+    exit(1)
+
 # ==================== ЗАГРУЗКА ДАННЫХ ====================
-print("\n📥 ЗАГРУЗКА ДАННЫХ...")
+print("\n📥 ЗАГРУЗКА ДАННЫХ ДЛЯ 6 МОНЕТ...")
 
 all_data = {}
 
@@ -137,6 +175,7 @@ for sym in SYMBOLS:
                 'volumes': df['volume'].values,
                 'highs': df['high'].values,
                 'lows': df['low'].values,
+                'timestamps': df['timestamp'].values,
                 'tf_config': tf
             }
             print(f"      ✅ {tf['name']}: {len(df)} свечей")
@@ -146,7 +185,7 @@ for sym in SYMBOLS:
     all_data[sym['name']] = sym_data
 
 # ==================== СИМУЛЯЦИЯ ====================
-print("\n🎯 ЗАПУСК БЭКТЕСТА...")
+print("\n🎯 ЗАПУСК БЭКТЕСТА С УЛУЧШЕННЫМИ ФИЛЬТРАМИ...")
 
 all_results = []
 
@@ -156,19 +195,21 @@ for rsi_opt in RSI_OPTIONS:
     print(f"{'='*80}")
     
     for tf in TIMEFRAMES:
-        print(f"\n   📈 {tf['name']} | SL: {tf['risk_pct']*100:.1f}% | TP: {tf['reward_pct']*100:.1f}% | RR 1:{tf['reward_pct']/tf['risk_pct']:.1f}")
-        print(f"   {'-'*60}")
+        print(f"\n   📈 {tf['name']} | ATR динамический SL/TP | ADX фильтр | Временной фильтр")
+        print(f"   {'-'*70}")
         
-        for sym_name in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
-            if sym_name not in all_data or tf['name'] not in all_data[sym_name]:
+        for sym_name in SYMBOLS:
+            sym = sym_name['name'] if isinstance(sym_name, dict) else sym_name
+            if sym not in all_data or tf['name'] not in all_data[sym]:
                 continue
                 
-            data = all_data[sym_name][tf['name']]
+            data = all_data[sym][tf['name']]
             df = data['df']
             prices = data['prices']
             volumes = data['volumes']
             highs = data['highs']
             lows = data['lows']
+            timestamps = data['timestamps']
             
             # Рассчитываем индикаторы
             rsi = calculate_rsi(prices)
@@ -182,13 +223,26 @@ for rsi_opt in RSI_OPTIONS:
             volume_ratio = volumes / (np.mean(volumes[max(0, len(volumes)-20):]) + 0.0001)
             bullish_ob, bearish_ob = find_order_blocks(prices, volumes)
             
-            # Симуляция с плечом 50x
+            # НОВЫЕ ИНДИКАТОРЫ
+            atr = calculate_atr(highs, lows, prices, 14)
+            adx = calculate_adx(highs, lows, prices, 14)
+            
+            # Симуляция
             balance = INITIAL_BALANCE
             position = None
             trades = []
             
             for i in range(100, len(prices) - 1):
                 price = prices[i]
+                timestamp = timestamps[i]
+                
+                # ========== ВРЕМЕННОЙ ФИЛЬТР ==========
+                if not is_active_session(timestamp):
+                    continue
+                
+                # ========== ADX ФИЛЬТР (сильный тренд) ==========
+                if adx[i] < 25:  # слабый тренд или флэт
+                    continue
                 
                 # Закрытие позиции
                 if position:
@@ -232,6 +286,7 @@ for rsi_opt in RSI_OPTIONS:
                     score = 0
                     signal_type = None
                     
+                    # SMC Order Blocks
                     if bullish_ob[i] == 1:
                         score += 20
                         signal_type = 'LONG'
@@ -239,6 +294,7 @@ for rsi_opt in RSI_OPTIONS:
                         score += 20
                         signal_type = 'SHORT'
                     
+                    # RSI
                     if rsi[i] < rsi_opt['low']:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -246,11 +302,13 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
+                    # MACD
                     if macd_hist[i] > 0 and signal_type == 'LONG':
                         score += 15
                     elif macd_hist[i] < 0 and signal_type == 'SHORT':
                         score += 15
                     
+                    # Bollinger
                     if price <= bb_lower[i] * 1.005:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -258,6 +316,7 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
+                    # Stochastic
                     if stoch_k[i] < 20:
                         score += 15
                         if not signal_type: signal_type = 'LONG'
@@ -265,6 +324,7 @@ for rsi_opt in RSI_OPTIONS:
                         score += 15
                         if not signal_type: signal_type = 'SHORT'
                     
+                    # EMA тренд
                     if ema_9[i] > ema_21[i] and ema_21[i] > ema_50[i]:
                         score += 10
                         if signal_type == 'LONG': score += 5
@@ -272,9 +332,11 @@ for rsi_opt in RSI_OPTIONS:
                         score += 10
                         if signal_type == 'SHORT': score += 5
                     
+                    # Объем
                     if volume_ratio[i] > 1.5:
                         score += 10
                     
+                    # VWAP
                     if price < vwap[i] and signal_type == 'LONG':
                         score += 10
                     elif price > vwap[i] and signal_type == 'SHORT':
@@ -284,14 +346,25 @@ for rsi_opt in RSI_OPTIONS:
                     
                     if signal_type and confidence >= tf['min_conf']:
                         entry = price
-                        size = balance * 0.01  # 1% риск
+                        size = balance * 0.03  # риск 3%
                         
-                        if signal_type == 'LONG':
-                            sl = entry * (1 - tf['risk_pct'])
-                            tp = entry * (1 + tf['reward_pct'])
+                        # ========== ДИНАМИЧЕСКИЙ SL/TP через ATR ==========
+                        current_atr = atr[i]
+                        if current_atr > 0:
+                            if signal_type == 'LONG':
+                                sl = entry - current_atr * 1.5
+                                tp = entry + current_atr * 3.0
+                            else:
+                                sl = entry + current_atr * 1.5
+                                tp = entry - current_atr * 3.0
                         else:
-                            sl = entry * (1 + tf['risk_pct'])
-                            tp = entry * (1 - tf['reward_pct'])
+                            # fallback на фиксированные
+                            if signal_type == 'LONG':
+                                sl = entry * 0.985
+                                tp = entry * 1.03
+                            else:
+                                sl = entry * 1.015
+                                tp = entry * 0.97
                         
                         position = {
                             'side': signal_type,
@@ -312,7 +385,7 @@ for rsi_opt in RSI_OPTIONS:
                 all_results.append({
                     'rsi': rsi_opt['name'],
                     'timeframe': tf['name'],
-                    'symbol': sym_name,
+                    'symbol': sym,
                     'total_trades': len(trades),
                     'wins': len(wins),
                     'losses': len(losses),
@@ -325,87 +398,61 @@ for rsi_opt in RSI_OPTIONS:
                     'avg_loss': round(abs(losses['pnl_pct'].mean()), 2) if len(losses) > 0 else 0
                 })
                 
-                # Вывод по монете
-                print(f"      {sym_name:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f}")
+                print(f"      {sym:4} | Сделок:{len(trades):3} | Win:{len(wins)/len(trades)*100:5.1f}% | P&L:{total_pnl:+7.2f}% | PF:{abs(wins['pnl_usdt'].sum() / (losses['pnl_usdt'].sum() + 0.0001)):.2f} | ADX:{adx[-1]:.1f}")
             else:
                 all_results.append({
                     'rsi': rsi_opt['name'],
                     'timeframe': tf['name'],
-                    'symbol': sym_name,
+                    'symbol': sym,
                     'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
                     'pnl_pct': 0, 'pnl_usdt': 0, 'final_balance': INITIAL_BALANCE,
                     'profit_factor': 0, 'avg_win': 0, 'avg_loss': 0
                 })
-                print(f"      {sym_name:4} | Сделок:0 | Нет сигналов")
+                print(f"      {sym:4} | Сделок:0 | Нет сигналов")
 
 # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
 print("\n" + "=" * 100)
-print("📊 ИТОГОВЫЕ РЕЗУЛЬТАТЫ БЭКТЕСТА (Плечо 50x)")
+print("📊 ИТОГОВЫЕ РЕЗУЛЬТАТЫ УЛУЧШЕННОГО БЭКТЕСТА")
 print("=" * 100)
 
-# Сводная таблица по RSI и таймфреймам
 print("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐")
-print("│ RSI вариант   │ Таймфрейм  │ Сделок │ Win Rate │ Сред. P&L │ Средний PF │ Лучшая монета │ Худшая монета │")
+print("│ Монета    │ Сделок │ Win Rate │ P&L 6 мес │ P&L год │ Profit Factor │ ATR SL/TP │ ADX фильтр │ Время     │")
 print("├─────────────────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
-for rsi_opt in RSI_OPTIONS:
-    for tf in TIMEFRAMES:
-        tf_results = [r for r in all_results if r['rsi'] == rsi_opt['name'] and r['timeframe'] == tf['name'] and r['total_trades'] > 0]
-        if tf_results:
-            avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
-            avg_pf = sum(r['profit_factor'] for r in tf_results) / len(tf_results)
-            total_trades = sum(r['total_trades'] for r in tf_results)
-            avg_win_rate = sum(r['win_rate'] for r in tf_results) / len(tf_results)
-            
-            best_symbol = max(tf_results, key=lambda x: x['pnl_pct'])['symbol']
-            worst_symbol = min(tf_results, key=lambda x: x['pnl_pct'])['symbol']
-            
-            print(f"│ {rsi_opt['name']:<12} │ {tf['name']:<10} │ {total_trades:6} │ {avg_win_rate:7.1f}% │ {avg_pnl:+8.2f}% │ {avg_pf:9.2f} │ {best_symbol:11} │ {worst_symbol:12} │")
+for sym in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
+    sym_results = [r for r in all_results if r['symbol'] == sym and r['total_trades'] > 0]
+    if sym_results:
+        r = sym_results[0]
+        yearly = r['pnl_pct'] * 2  # простая экстраполяция
+        print(f"│ {sym:6} │ {r['total_trades']:6} │ {r['win_rate']:7.1f}% │ {r['pnl_pct']:+8.2f}% │ {yearly:+8.2f}% │ {r['profit_factor']:13.2f} │ {'✅' if r['total_trades'] > 0 else '❌':8} │ {'✅' if r['total_trades'] > 0 else '❌':8} │ {'✅' if r['total_trades'] > 0 else '❌':8} │")
+    else:
+        print(f"│ {sym:6} │ {'0':6} │ {'0.0':7}% │ {'0.00':+8}% │ {'0.00':+8}% │ {'0.00':13} │ {'❌':8} │ {'❌':8} │ {'❌':8} │")
 
 print("└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
 
-# Лучшие результаты по монетам
-print("\n🏆 ТОП-10 ЛУЧШИХ РЕЗУЛЬТАТОВ ПО МОНЕТАМ:")
-print("-" * 100)
-top_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'], reverse=True)[:10]
-print(f"{'№':<3} {'RSI':<12} {'Таймфрейм':<10} {'Монета':<6} {'Сделок':<7} {'Win Rate':<9} {'P&L':<10} {'Profit Factor':<14}")
-print("-" * 100)
-for i, r in enumerate(top_results, 1):
-    print(f"{i:<3} {r['rsi']:<12} {r['timeframe']:<10} {r['symbol']:<6} {r['total_trades']:<7} {r['win_rate']:<8.1f}% {r['pnl_pct']:+8.2f}% {r['profit_factor']:<14.2f}")
-
-# Худшие результаты
-print("\n💀 ТОП-10 ХУДШИХ РЕЗУЛЬТАТОВ:")
-print("-" * 100)
-worst_results = sorted([r for r in all_results if r['total_trades'] > 0], key=lambda x: x['pnl_pct'])[:10]
-print(f"{'№':<3} {'RSI':<12} {'Таймфрейм':<10} {'Монета':<6} {'Сделок':<7} {'Win Rate':<9} {'P&L':<10} {'Profit Factor':<14}")
-print("-" * 100)
-for i, r in enumerate(worst_results, 1):
-    print(f"{i:<3} {r['rsi']:<12} {r['timeframe']:<10} {r['symbol']:<6} {r['total_trades']:<7} {r['win_rate']:<8.1f}% {r['pnl_pct']:+8.2f}% {r['profit_factor']:<14.2f}")
-
-# Статистика по таймфреймам
-print("\n📊 СТАТИСТИКА ПО ТАЙМФРЕЙМАМ (средняя по всем RSI и монетам):")
+# Сравнение с прошлым тестом
+print("\n📈 СРАВНЕНИЕ С ПРЕДЫДУЩИМ ТЕСТОМ (DAY_1h, RSI 28/72):")
 print("-" * 80)
-for tf in TIMEFRAMES:
-    tf_results = [r for r in all_results if r['timeframe'] == tf['name'] and r['total_trades'] > 0]
-    if tf_results:
-        avg_pnl = sum(r['pnl_pct'] for r in tf_results) / len(tf_results)
-        total_trades = sum(r['total_trades'] for r in tf_results)
-        positive_count = len([r for r in tf_results if r['pnl_pct'] > 0])
-        print(f"   {tf['name']:<10} | Сделок: {total_trades:5} | Прибыльных монет: {positive_count}/{len(tf_results)} | Средняя P&L: {avg_pnl:+7.2f}%")
+print(f"{'Монета':<8} {'Было (без фильтров)':<25} {'Стало (с фильтрами)':<25} {'Изменение':<15}")
+print("-" * 80)
 
-# Лучшая комбинация
+# Данные из прошлого теста
+previous_results = {
+    'BTC': 14.82, 'ETH': 14.61, 'SOL': 29.14, 'SAND': 17.06, 'TIA': 23.33, 'WIF': 39.77
+}
+
+for sym in ['BTC', 'ETH', 'SOL', 'SAND', 'TIA', 'WIF']:
+    current = [r for r in all_results if r['symbol'] == sym and r['total_trades'] > 0]
+    current_pnl = current[0]['pnl_pct'] if current else 0
+    previous = previous_results.get(sym, 0)
+    change = current_pnl - previous
+    arrow = '▲' if change > 0 else '▼' if change < 0 else '●'
+    print(f"{sym:<8} {previous:+.2f}%{'':<20} {current_pnl:+.2f}%{'':<20} {arrow} {change:+.2f}%")
+
+# Лучшая монета
 best = max(all_results, key=lambda x: x['pnl_pct'])
-print(f"\n🎯 ЛУЧШАЯ КОМБИНАЦИЯ:")
-print(f"   • RSI: {best['rsi']} ({[opt for opt in RSI_OPTIONS if opt['name'] == best['rsi']][0]['low']}/{best['rsi'].split('_')[1]})")
-print(f"   • Таймфрейм: {best['timeframe']}")
-print(f"   • Монета: {best['symbol']}")
-print(f"   • Сделок: {best['total_trades']}")
-print(f"   • Win Rate: {best['win_rate']}%")
-print(f"   • Прибыль: {best['pnl_pct']:.2f}% (${best['pnl_usdt']:.2f})")
-print(f"   • Profit Factor: {best['profit_factor']}")
-print(f"   • Средняя прибыль: {best['avg_win']:.2f}%")
-print(f"   • Средний убыток: {best['avg_loss']:.2f}%")
+print(f"\n🏆 ЛУЧШАЯ МОНЕТА: {best['symbol']} | P&L: +{best['pnl_pct']:.2f}% | Win Rate: {best['win_rate']}% | PF: {best['profit_factor']}")
 
 print("\n" + "=" * 100)
-print("✅ БЭКТЕСТ ЗАВЕРШЕН")
+print("✅ УЛУЧШЕННЫЙ БЭКТЕСТ ЗАВЕРШЕН")
 print("=" * 100)
