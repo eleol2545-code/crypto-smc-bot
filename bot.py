@@ -5,7 +5,8 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from datetime import datetime
+import threading
+from datetime import datetime, time as dt_time
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
@@ -21,11 +22,77 @@ os.makedirs('data/charts', exist_ok=True)
 RISK_PER_TRADE = 3
 RSI_LOW = 28
 RSI_HIGH = 72
+CHECK_INTERVAL = 60  # секунд между проверками сигналов
+
+# Торговые сессии (МСК)
+SESSIONS = {
+    'asia': {'name': '🇯🇵 АЗИАТСКАЯ', 'start': 2, 'end': 10, 'volatility': 'Низкая', 'color': '🟡'},
+    'london': {'name': '🇬🇧 ЛОНДОНСКАЯ', 'start': 10, 'end': 16, 'volatility': 'Высокая', 'color': '🟢'},
+    'newyork': {'name': '🇺🇸 НЬЮ-ЙОРКСКАЯ', 'start': 16, 'end': 22, 'volatility': 'Очень высокая', 'color': '🔴'},
+    'calm': {'name': '😴 ТИХАЯ', 'start': 22, 'end': 2, 'volatility': 'Низкая', 'color': '⚪'}
+}
+
+def get_current_session():
+    """Определяет текущую торговую сессию"""
+    now = datetime.now()
+    current_hour = now.hour
+    
+    if 10 <= current_hour < 16:
+        return 'london'
+    elif 16 <= current_hour < 22:
+        return 'newyork'
+    elif 2 <= current_hour < 10:
+        return 'asia'
+    else:
+        return 'calm'
+
+def get_next_session_start():
+    """Возвращает время начала следующей сессии"""
+    now = datetime.now()
+    current_hour = now.hour
+    
+    if current_hour < 2:
+        next_hour = 2
+        next_name = 'asia'
+    elif current_hour < 10:
+        next_hour = 10
+        next_name = 'london'
+    elif current_hour < 16:
+        next_hour = 16
+        next_name = 'newyork'
+    elif current_hour < 22:
+        next_hour = 22
+        next_name = 'calm'
+    else:
+        next_hour = 2
+        next_name = 'asia'
+        tomorrow = True
+        if 'tomorrow' in locals():
+            next_time = datetime(now.year, now.month, now.day + 1, next_hour, 0)
+        else:
+            next_time = datetime(now.year, now.month, now.day, next_hour, 0)
+        return next_time, next_name
+    
+    next_time = datetime(now.year, now.month, now.day, next_hour, 0)
+    if next_time <= now:
+        next_time = datetime(now.year, now.month, now.day + 1, next_hour, 0)
+    
+    return next_time, next_name
+
+def format_time_until(target_time):
+    """Форматирует время до события"""
+    diff = target_time - datetime.now()
+    hours = diff.seconds // 3600
+    minutes = (diff.seconds % 3600) // 60
+    if diff.days > 0:
+        return f"{diff.days}д {hours}ч"
+    return f"{hours}ч {minutes}мин"
 
 # ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
 GLOBAL_WATCHLIST_FILE = 'data/global_watchlist.json'
 GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
 GLOBAL_TRADES_FILE = 'data/global_trades.json'
+LAST_SESSION_NOTIFICATION = {'session': None, 'time': 0}
 
 def get_global_watchlist():
     if os.path.exists(GLOBAL_WATCHLIST_FILE):
@@ -163,16 +230,86 @@ def format_price(price):
     else:
         return f"{price:.0f}"
 
-# ==================== БИРЖА ====================
-print("🔌 Подключение к KuCoin...")
-exchange = ccxt.kucoin({'enableRateLimit': True})
+# ==================== МУЛЬТИБИРЖЕВОЙ АГРЕГАТОР ====================
+class MultiExchangeAggregator:
+    def __init__(self):
+        self.exchanges = []
+        self.init_exchanges()
+    
+    def init_exchanges(self):
+        exchanges_config = [
+            {'name': 'KuCoin', 'class': ccxt.kucoin, 'params': {}},
+            {'name': 'Gate.io', 'class': ccxt.gateio, 'params': {}},
+            {'name': 'OKX', 'class': ccxt.okx, 'params': {}},
+            {'name': 'Bitget', 'class': ccxt.bitget, 'params': {}},
+        ]
+        for config in exchanges_config:
+            try:
+                ex = config['class'](config['params'])
+                ex.enableRateLimit = True
+                self.exchanges.append({'name': config['name'], 'exchange': ex})
+                print(f"✅ {config['name']} подключена")
+            except Exception as e:
+                print(f"❌ {config['name']} ошибка: {e}")
+    
+    def format_symbol(self, exchange_name, symbol):
+        symbol_clean = symbol.upper().replace('/USDT', '').replace('USDT', '').replace('/', '')
+        if exchange_name == 'KuCoin':
+            return f"{symbol_clean}/USDT"
+        elif exchange_name == 'Gate.io':
+            return f"{symbol_clean}_USDT"
+        elif exchange_name == 'OKX':
+            return f"{symbol_clean}-USDT-SWAP"
+        elif exchange_name == 'Bitget':
+            return f"{symbol_clean}/USDT"
+        return f"{symbol_clean}/USDT"
+    
+    def get_aggregated_price(self, symbol):
+        prices = []
+        volumes = []
+        for ex in self.exchanges:
+            try:
+                sym = self.format_symbol(ex['name'], symbol)
+                ticker = ex['exchange'].fetch_ticker(sym)
+                prices.append(ticker['last'])
+                volumes.append(ticker.get('quoteVolume', 0))
+            except:
+                continue
+        if not prices:
+            return None
+        total_volume = sum(volumes)
+        if total_volume > 0:
+            return sum(p * v for p, v in zip(prices, volumes)) / total_volume
+        return sum(prices) / len(prices)
+    
+    def get_aggregated_ohlcv(self, symbol, timeframe='1h', limit=150):
+        all_dfs = []
+        for ex in self.exchanges:
+            try:
+                sym = self.format_symbol(ex['name'], symbol)
+                ohlcv = ex['exchange'].fetch_ohlcv(sym, timeframe, limit=limit)
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                all_dfs.append(df)
+            except:
+                continue
+        if not all_dfs:
+            return None
+        for df in all_dfs:
+            df.set_index('timestamp', inplace=True)
+        common_index = all_dfs[0].index
+        for df in all_dfs[1:]:
+            common_index = common_index.intersection(df.index)
+        agg_df = pd.DataFrame(index=common_index)
+        agg_df['close'] = np.mean([df.loc[common_index, 'close'].values for df in all_dfs], axis=0)
+        agg_df['volume'] = np.sum([df.loc[common_index, 'volume'].values for df in all_dfs], axis=0)
+        agg_df['high'] = np.mean([df.loc[common_index, 'high'].values for df in all_dfs], axis=0)
+        agg_df['low'] = np.mean([df.loc[common_index, 'low'].values for df in all_dfs], axis=0)
+        agg_df['open'] = np.mean([df.loc[common_index, 'open'].values for df in all_dfs], axis=0)
+        agg_df.reset_index(inplace=True)
+        return agg_df
 
-try:
-    ticker = exchange.fetch_ticker('BTC/USDT')
-    print(f"✅ KuCoin подключена! BTC: ${ticker['last']:.2f}")
-except Exception as e:
-    print(f"❌ Ошибка: {e}")
-    exchange = None
+aggregator = MultiExchangeAggregator()
 
 # ==================== SMC ИНДИКАТОРЫ ====================
 def calculate_rsi(prices, period=14):
@@ -233,26 +370,21 @@ def calculate_volume_profile(df, bars=50):
 
 # ==================== ГЕНЕРАЦИЯ СИГНАЛА ====================
 def get_analysis(symbol):
-    if not exchange:
-        return None
     try:
-        ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", '1h', limit=150)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df = aggregator.get_aggregated_ohlcv(symbol, '1h', 150)
+        if df is None:
+            return None
         
         current_price = df['close'].iloc[-1]
         support = df['low'].iloc[-20:].min()
         resistance = df['high'].iloc[-20:].max()
         poc = calculate_volume_profile(df)
         
-        # RSI
         rsi = calculate_rsi(df['close'].values)
         current_rsi = rsi[-1] if len(rsi) > 0 else 50
         
-        # Order Blocks
         bullish_ob, bearish_ob, ob_high, ob_low = find_order_blocks(df)
         
-        # Система баллов
         score = 0
         signal_type = None
         reasons = []
@@ -313,17 +445,17 @@ def get_analysis(symbol):
             'poc': poc,
             'rsi': current_rsi,
             'df': df,
-            'exchange': 'KuCoin',
+            'exchange': 'Multi-Exchange (4 биржи)',
             'bullish_ob': bullish_ob,
             'bearish_ob': bearish_ob,
             'ob_high': ob_high,
             'ob_low': ob_low
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error for {symbol}: {e}")
         return None
 
-# ==================== ПОЛНЫЙ ГРАФИК СО СВЕЧАМИ ====================
+# ==================== ГРАФИК ====================
 def make_chart(symbol, analysis):
     if not analysis or analysis.get('df') is None:
         return None
@@ -333,19 +465,15 @@ def make_chart(symbol, analysis):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     dates = df['timestamp']
     
-    # Рисуем свечи
     for i, row in df.iterrows():
         color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
-        # Тень
         ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=1)
-        # Тело
         ax1.add_patch(Rectangle(
             (row['timestamp'] - pd.Timedelta(minutes=30), min(row['open'], row['close'])),
             pd.Timedelta(minutes=60), abs(row['close'] - row['open']),
             facecolor=color, alpha=0.7, linewidth=0
         ))
     
-    # Order Blocks
     for i in range(len(df)):
         idx = len(analysis['df']) - 60 + i
         if idx < len(analysis.get('bullish_ob', [])) and analysis['bullish_ob'][idx] == 1:
@@ -361,17 +489,13 @@ def make_chart(symbol, analysis):
                 ax1.axhspan(ob_l, ob_h, alpha=0.2, color='red')
                 ax1.text(dates.iloc[i], ob_h, 'SELL OB', color='red', fontsize=8, ha='right')
     
-    # Текущая цена
     current_price = df['close'].iloc[-1]
     ax1.axhline(y=current_price, color='yellow', linestyle='-', linewidth=1.5, label=f'Price: ${current_price:.2f}')
-    
-    # Уровни
     ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, label=f'Support: ${analysis["support"]:.2f}')
     ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, label=f'Resistance: ${analysis["resistance"]:.2f}')
     if analysis.get('poc'):
         ax1.axhline(y=analysis['poc'], color='yellow', linestyle=':', linewidth=1, alpha=0.5, label=f'POC: ${analysis["poc"]:.2f}')
     
-    # Сигнал
     signal = analysis.get('signal')
     if signal:
         color = 'green' if signal['signal'] == 'LONG' else 'red'
@@ -382,13 +506,11 @@ def make_chart(symbol, analysis):
         ax1.annotate('ВХОД', xy=(last_date, signal['entry']), xytext=(last_date, signal['entry'] * 1.02),
                     arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
     
-    # Объем
     colors_vol = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df['close'], df['open'])]
     ax2.bar(dates, df['volume'], color=colors_vol, alpha=0.7, width=0.8)
     ax2.set_ylabel('Volume', color='white')
     ax2.grid(True, alpha=0.2)
     
-    # Оформление
     title = f'{symbol} | SMC Analysis'
     if signal:
         title += f' | {signal["signal"]} СИГНАЛ ({signal["confidence"]}%)'
@@ -410,6 +532,111 @@ def make_chart(symbol, analysis):
     plt.close()
     
     return buf
+
+# ==================== ОПОВЕЩЕНИЯ О СЕССИЯХ ====================
+def check_session_notification(chat_ids):
+    """Проверяет и отправляет уведомления о начале/конце сессий"""
+    global LAST_SESSION_NOTIFICATION
+    
+    current_session = get_current_session()
+    session_info = SESSIONS[current_session]
+    
+    # Проверяем, нужно ли отправить уведомление о начале сессии
+    if LAST_SESSION_NOTIFICATION['session'] != current_session:
+        LAST_SESSION_NOTIFICATION['session'] = current_session
+        LAST_SESSION_NOTIFICATION['time'] = time.time()
+        
+        next_time, next_session = get_next_session_start()
+        time_left = format_time_until(next_time)
+        
+        msg = f"""🕐 *СМЕНА ТОРГОВОЙ СЕССИИ*
+
+{session_info['color']} *{session_info['name']} СЕССИЯ* {session_info['color']}
+
+📊 *Волатильность:* {session_info['volatility']}
+⏰ *Длится до:* {next_time.strftime('%H:%M')} МСК (осталось {time_left})
+
+💡 *Рекомендации:*
+"""
+        if current_session == 'london':
+            msg += "• 🚀 Лучшее время для торговли\n• 📈 Высокая ликвидность\n• 🎯 Ищите пробои уровней"
+        elif current_session == 'newyork':
+            msg += "• 🔥 Максимальная волатильность\n• 💰 Крупные движения\n• ⚠️ Увеличьте стоп-лоссы"
+        elif current_session == 'asia':
+            msg += "• 😴 Низкая волатильность\n• 📊 Торгуйте только сильные сигналы\n• ⏳ Ждите Лондон/Нью-Йорк"
+        else:
+            msg += "• 😴 Торговая пауза\n• 📊 Анализируйте, но не входите\n• ⏳ Следующая сессия через {time_left}"
+        
+        for chat_id in chat_ids:
+            send_message(chat_id, msg)
+
+# ==================== АВТОУВЕДОМЛЕНИЯ ====================
+last_signals = {}
+last_session_check = 0
+
+def check_and_notify():
+    """Фоновая проверка сигналов и сессий"""
+    settings = get_global_settings()
+    if not settings.get('notifications_enabled', True):
+        return
+    
+    watchlist = get_global_watchlist()
+    chat_ids = get_all_chat_ids()
+    
+    # Проверка сессий (каждые 10 минут)
+    global last_session_check
+    if time.time() - last_session_check > 600:
+        last_session_check = time.time()
+        check_session_notification(chat_ids)
+    
+    # Проверка сигналов
+    for sym in watchlist:
+        analysis = get_analysis(sym)
+        if analysis and analysis.get('signal'):
+            signal = analysis['signal']
+            signal_key = f"{sym}_{signal['signal']}_{int(signal['entry'])}"
+            
+            if signal_key not in last_signals:
+                last_signals[signal_key] = time.time()
+                
+                # Добавляем информацию о сессии в сигнал
+                session = get_current_session()
+                session_name = SESSIONS[session]['name']
+                
+                msg = format_signal(sym, analysis)
+                msg += f"\n\n🕐 *Текущая сессия:* {SESSIONS[session]['color']} {session_name}"
+                
+                for chat_id in chat_ids:
+                    send_message(chat_id, msg)
+    
+    # Очистка старых сигналов (через 1 час)
+    current_time = time.time()
+    for key in list(last_signals.keys()):
+        if current_time - last_signals[key] > 3600:
+            del last_signals[key]
+
+def get_all_chat_ids():
+    chat_ids = []
+    for filename in os.listdir('data'):
+        if filename.startswith('user_') and filename.endswith('.json'):
+            chat_id = int(filename.replace('user_', '').replace('.json', ''))
+            chat_ids.append(chat_id)
+    return chat_ids if chat_ids else []
+
+def start_auto_notifications():
+    def notification_loop():
+        print("🔄 Фоновые уведомления запущены (проверка каждые 60 сек)")
+        print("📅 Отслеживаются торговые сессии: Азия (2-10), Лондон (10-16), Нью-Йорк (16-22)")
+        while True:
+            try:
+                check_and_notify()
+                time.sleep(60)
+            except Exception as e:
+                print(f"Ошибка уведомлений: {e}")
+                time.sleep(60)
+    
+    thread = threading.Thread(target=notification_loop, daemon=True)
+    thread.start()
 
 # ==================== TELEGRAM ====================
 def send_message(chat_id, text):
@@ -452,6 +679,7 @@ def format_signal(symbol, analysis):
         msg += f"\n📊 RSI: {analysis['rsi']:.1f}"
         if analysis.get('poc'):
             msg += f"\n🟡 POC: ${analysis['poc']:.2f}"
+        msg += f"\n🏦 *Биржа:* {analysis['exchange']}"
         return msg
     else:
         return f"""⏳ *НЕТ СИГНАЛА* | {symbol}
@@ -462,19 +690,36 @@ def format_signal(symbol, analysis):
 📊 RSI: {analysis['rsi']:.1f}
 {f"🟡 POC: ${analysis['poc']:.2f}" if analysis.get('poc') else ""}
 
-💡 Рекомендация: наблюдение"""
+💡 Рекомендация: наблюдение
+🏦 *Биржа:* {analysis['exchange']}"""
+
+def save_chat_id(chat_id):
+    file_path = f'data/user_{chat_id}.json'
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump({'chat_id': chat_id, 'first_seen': datetime.now().isoformat()}, f)
 
 def handle_message(chat_id, text):
     print(f"Message: {text}")
+    save_chat_id(chat_id)
     settings = get_global_settings()
     watchlist = get_global_watchlist()
     
     if text == "/start":
+        session = get_current_session()
+        session_info = SESSIONS[session]
+        next_time, next_session = get_next_session_start()
+        
         msg = f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
 
-📊 *SMC/ICT анализ:* Order Blocks, RSI, POC
+📊 *Методология:* SMC/ICT + Order Blocks + RSI + POC
+🏦 *Биржи:* KuCoin + Gate.io + OKX + Bitget (агрегированные данные)
 🎯 *Стили:* SCALP, DAY, SWING
-🏦 *Биржа:* KuCoin
+🔔 *Автоуведомления:* {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}
+
+🕐 *Сейчас:* {session_info['color']} {session_info['name']} сессия
+📊 *Волатильность:* {session_info['volatility']}
+⏰ *До конца:* {format_time_until(next_time)}
 
 *Команды:*
 /add BTC,ETH,SOL — добавить монеты
@@ -482,8 +727,9 @@ def handle_message(chat_id, text):
 /list — список
 /signals — сигналы
 /all_signals — сигналы по всем стилям
-/chart BTC — полный график со свечами
+/chart BTC — график со свечами и OB
 /analyze PEPE — анализ
+/session — текущая сессия
 /take LONG BTC 65000 100 5 — открыть сделку
 /close 123 — закрыть
 /trades — активные сделки
@@ -492,8 +738,31 @@ def handle_message(chat_id, text):
 /pnl — P&L
 /reset_trades — сброс
 /style scalp|day|swing — стиль
+/notifications_on — включить уведомления
+/notifications_off — выключить
 /status — статус
 /help — помощь"""
+        send_message(chat_id, msg)
+    
+    elif text == "/session":
+        session = get_current_session()
+        session_info = SESSIONS[session]
+        next_time, next_session = get_next_session_start()
+        time_left = format_time_until(next_time)
+        
+        msg = f"""🕐 *ТОРГОВЫЕ СЕССИИ*
+
+{session_info['color']} *СЕЙЧАС:* {session_info['name']}
+📊 *Волатильность:* {session_info['volatility']}
+⏰ *До конца:* {time_left}
+
+📅 *Расписание (МСК):*
+• 🟡 Азиатская: 02:00-10:00 (низкая волатильность)
+• 🟢 Лондонская: 10:00-16:00 (высокая волатильность) 🔥
+• 🔴 Нью-Йоркская: 16:00-22:00 (очень высокая) 🔥🔥
+• ⚪ Тихая: 22:00-02:00 (низкая)
+
+💡 *Лучшее время для торговли:* Лондон + Нью-Йорк (10:00-22:00)"""
         send_message(chat_id, msg)
     
     elif text.startswith("/add"):
@@ -673,25 +942,49 @@ def handle_message(chat_id, text):
             save_global_settings(settings)
             send_message(chat_id, f"✅ Стиль: {new_style.upper()}")
     
+    elif text == "/notifications_on":
+        settings['notifications_enabled'] = True
+        save_global_settings(settings)
+        send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*\n\nБот будет присылать сигналы автоматически!")
+    
+    elif text == "/notifications_off":
+        settings['notifications_enabled'] = False
+        save_global_settings(settings)
+        send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
+    
     elif text == "/status":
+        session = get_current_session()
+        session_info = SESSIONS[session]
         msg = f"""✅ *СТАТУС*
 
-🏦 Биржа: KuCoin
+🏦 Биржи: KuCoin + Gate.io + OKX + Bitget
 🎯 Стиль: {settings['style'].upper()}
 📋 Монет: {len(watchlist)}
 🔄 Активных сделок: {len(trade_manager.get_active_trades())}
-🔔 Уведомления: {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}"""
+🔔 Уведомления: {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}
+
+🕐 *Сейчас:* {session_info['color']} {session_info['name']} сессия
+📊 *Волатильность:* {session_info['volatility']}"""
         send_message(chat_id, msg)
     
     elif text == "/help":
-        send_message(chat_id, "📋 *КОМАНДЫ*\n/add BTC\n/remove DOGE\n/list\n/signals\n/all_signals\n/chart BTC\n/analyze PEPE\n/take LONG BTC 65000 100 5\n/close 123\n/trades\n/history\n/stats\n/pnl\n/reset_trades\n/style day\n/status\n/help")
+        send_message(chat_id, "📋 *КОМАНДЫ*\n/add BTC\n/remove DOGE\n/list\n/signals\n/all_signals\n/chart BTC\n/analyze PEPE\n/session\n/take LONG BTC 65000 100 5\n/close 123\n/trades\n/history\n/stats\n/pnl\n/reset_trades\n/style day\n/notifications_on\n/notifications_off\n/status\n/help")
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
+# ==================== ЗАПУСК ====================
 print("=" * 60)
 print("🚀 SMC FULL BOT — ПОЛНАЯ ВЕРСИЯ")
-print("📊 Свечи | Order Blocks | RSI | POC")
+print("📊 Мультибиржевая агрегация (4 биржи)")
+print("🕐 Отслеживание торговых сессий")
+print("📈 Графики со свечами и Order Blocks")
+print("🔔 Автоматические уведомления о сигналах и сессиях")
+print("=" * 60)
+
+# Запускаем фоновые уведомления
+start_auto_notifications()
+
 print("✅ Бот запущен, ожидание сообщений...")
 print("=" * 60)
 
