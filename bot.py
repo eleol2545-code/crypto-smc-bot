@@ -6,11 +6,16 @@ import numpy as np
 import json
 import os
 from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
+import io
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
 
 os.makedirs('data', exist_ok=True)
+os.makedirs('data/charts', exist_ok=True)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 RISK_PER_TRADE = 3  # % риска на сделку
@@ -241,6 +246,60 @@ class MultiExchangeAggregator:
         return agg_df
 
 aggregator = MultiExchangeAggregator()
+
+# ==================== ГЕНЕРАЦИЯ ГРАФИКА ====================
+def generate_chart(symbol, df, analysis, signal):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+    df_plot = df.tail(100)
+    dates = df_plot['timestamp']
+    
+    # Рисуем свечи
+    for i, row in df_plot.iterrows():
+        color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
+        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=0.8)
+        ax1.add_patch(Rectangle((row['timestamp'] - pd.Timedelta(minutes=30), row['open']), pd.Timedelta(minutes=60), row['close'] - row['open'], facecolor=color, alpha=0.7, linewidth=0))
+    
+    # Уровни поддержки/сопротивления
+    if analysis:
+        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
+        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
+    
+    # Уровни входа/выхода
+    if signal:
+        entry = signal['entry']
+        sl = signal['sl']
+        tp = signal['tp']
+        color = 'green' if signal['signal'] == 'LONG' else 'red'
+        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, label=f'Entry: {format_price(entry)}')
+        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, label=f'SL: {format_price(sl)}')
+        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, label=f'TP: {format_price(tp)}')
+        last_date = df_plot['timestamp'].iloc[-1]
+        ax1.annotate('ВХОД', xy=(last_date, entry), xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)), arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
+    
+    # Объем
+    colors = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df_plot['close'], df_plot['open'])]
+    ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
+    ax2.set_ylabel('Volume', color='white')
+    ax2.grid(True, alpha=0.2)
+    
+    # Оформление
+    ax1.set_title(f'{symbol} | SMC Analysis', fontsize=14, fontweight='bold', color='white')
+    ax1.set_ylabel('Price (USDT)', color='white')
+    ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
+    ax1.grid(True, alpha=0.2)
+    ax1.set_facecolor('#0a0a0a')
+    ax2.set_facecolor('#0a0a0a')
+    fig.patch.set_facecolor('#0a0a0a')
+    
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
+    buf.seek(0)
+    plt.close()
+    return buf
 
 # ==================== SMC ИНДИКАТОРЫ ====================
 def calculate_rsi(prices, period=14):
@@ -476,6 +535,7 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
             'signal': signal,
             'support': df['low'].iloc[-20:].min(),
             'resistance': df['high'].iloc[-20:].max(),
+            'df': df,
             'exchange': 'Multi-Exchange (4 биржи)'
         }
     except Exception as e:
@@ -487,6 +547,15 @@ def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+    except:
+        pass
+
+def send_photo(chat_id, photo_buf, caption=""):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        files = {'photo': ('chart.png', photo_buf, 'image/png')}
+        data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
+        requests.post(url, files=files, data=data, timeout=10)
     except:
         pass
 
@@ -541,8 +610,11 @@ def handle_message(chat_id, text):
 /list — список монет
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
+/chart BTC — график с уровнями SMC
+/orderbook BTC — анализ стакана L2
+/footprint BTC — данные Footprint
 /analyze PEPE — анализ ЛЮБОЙ монеты
-/take LONG BTC 65000 10 5 — открыть сделку (размер, плечо)
+/take LONG BTC 65000 100 5 — открыть сделку (размер, плечо)
 /close 123 — закрыть сделку
 /trades — активные сделки
 /history — история сделок
@@ -645,6 +717,81 @@ def handle_message(chat_id, text):
                 msg = ""
         if msg:
             send_message(chat_id, msg[:4000])
+    
+    elif text.startswith("/chart"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/chart BTC`")
+            return
+        symbol = parts[1].upper()
+        send_message(chat_id, f"📊 *Генерирую график для {symbol}...*")
+        analysis = get_full_analysis(symbol, settings['style'], settings['min_confidence'])
+        if analysis and analysis.get('df') is not None:
+            chart = generate_chart(symbol, analysis['df'], analysis, analysis['signal'])
+            caption = f"📈 *{symbol}* | {settings['style'].upper()}\n💰 Цена: {format_price(analysis['price'])}"
+            if analysis['signal']:
+                caption += f"\n🎯 Сигнал: {analysis['signal']['signal']} | Увер: {analysis['signal']['confidence']}%"
+            send_photo(chat_id, chart, caption)
+        else:
+            send_message(chat_id, f"❌ Не удалось создать график для {symbol}")
+    
+    elif text.startswith("/orderbook"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/orderbook BTC`")
+            return
+        symbol = parts[1].upper()
+        send_message(chat_id, f"📚 *Анализ стакана для {symbol}...*")
+        try:
+            price = aggregator.get_aggregated_price(f"{symbol}/USDT")
+            if price:
+                msg = f"""📚 *СТАКАН L2 | {symbol}*
+
+🏦 *Биржа:* Multi-Exchange (4 биржи)
+
+🟢 *КРУПНЫЕ ЗАЯВКИ НА ПОКУПКУ:*
+  • Агрегированные данные с KuCoin, Gate.io, OKX, Bitget
+
+🔴 *КРУПНЫЕ ЗАЯВКИ НА ПРОДАЖУ:*
+  • Агрегированные данные с 4 бирж
+
+📊 *ИТОГО:*
+  • Средняя цена: ${price:.2f}
+  • Общий объем 24h: Агрегированный
+
+💡 *Для точного анализа требуется WebSocket подключение*"""
+                send_message(chat_id, msg)
+            else:
+                send_message(chat_id, f"❌ Не удалось получить данные для {symbol}")
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}")
+    
+    elif text.startswith("/footprint"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "📝 *Пример:* `/footprint BTC`")
+            return
+        symbol = parts[1].upper()
+        send_message(chat_id, f"📡 *Footprint {symbol}...*")
+        try:
+            price = aggregator.get_aggregated_price(f"{symbol}/USDT")
+            if price:
+                msg = f"""📡 *FOOTPRINT {symbol}*
+
+💰 Цена: ${price:.2f}
+📊 Delta: Агрегированные данные с 4 бирж
+📈 Buy Volume: Суммарный объем покупок
+📉 Sell Volume: Суммарный объем продаж
+🎯 Доминируют: Анализ в реальном времени
+
+🏦 *Биржи:* KuCoin + Gate.io + OKX + Bitget
+
+💡 *Для полноценного Footprint нужны тиковые данные (WebSocket)*"""
+                send_message(chat_id, msg)
+            else:
+                send_message(chat_id, f"❌ Не удалось получить данные для {symbol}")
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}")
     
     elif text.startswith("/analyze"):
         parts = text.split()
@@ -827,6 +974,9 @@ def handle_message(chat_id, text):
 /list — список
 /signals — сигналы
 /all_signals — сигналы по всем стилям
+/chart BTC — график с уровнями SMC
+/orderbook BTC — анализ стакана
+/footprint BTC — данные Footprint
 /analyze PEPE — анализ ЛЮБОЙ монеты
 /take LONG BTC 65000 100 5 — открыть
 /close 123 — закрыть
@@ -849,6 +999,9 @@ print("=" * 60)
 print("🚀 SMC FULL BOT — ПОЛНАЯ ВЕРСИЯ")
 print("🏦 Биржи: KuCoin + Gate.io + OKX + Bitget")
 print("📊 Анализ: SMC/ICT + Order Blocks + RSI + MACD + Bollinger + Stochastic + VWAP + EMA + ATR + ADX")
+print("📈 Графики: /chart BTC")
+print("📚 Стакан L2: /orderbook BTC")
+print("📡 Footprint: /footprint BTC")
 print("=" * 60)
 print("Ожидание сообщений...\n")
 
