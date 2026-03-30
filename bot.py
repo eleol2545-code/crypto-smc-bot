@@ -2,7 +2,7 @@ import ccxt
 import time
 
 print("=" * 60)
-print("🔍 ТЕСТ ПОДКЛЮЧЕНИЯ КО ВСЕМ БИРЖАМ")
+print("🔍 ТЕСТ ПОДКЛЮЧЕНИЯ КО ВСЕМ БИРЖАМ (ВКЛЮЧАЯ BINANCE)")
 print("=" * 60)
 
 # Список бирж для тестирования
@@ -46,7 +46,7 @@ for name, cls, symbol, params in exchanges:
         print(f"❌ НЕ РАБОТАЕТ: {error}")
         failed_exchanges.append(name)
     
-    time.sleep(1)  # пауза чтобы не забанили
+    time.sleep(1)
 
 # ==================== РЕЗУЛЬТАТЫ ====================
 print("\n" + "=" * 60)
@@ -79,11 +79,14 @@ if working_exchanges:
     print(f"   • Разброс цен: ${price_spread:.2f} ({price_spread_pct:.2f}%)")
     print(f"   • Общий объем 24h: ${total_volume/1_000_000:.2f}M")
     
+    # Какая биржа самая активная
+    most_active = max(working_exchanges, key=lambda x: x['volume'])
+    print(f"\n🏆 САМАЯ АКТИВНАЯ БИРЖА: {most_active['name']} (${most_active['volume']/1_000_000:.2f}M)")
+    
 else:
     print("\n❌ НИ ОДНА БИРЖА НЕ РАБОТАЕТ!")
 
 print("\n" + "=" * 60)
 
-if working_exchanges:
-    print(f"\n🎯 РЕКОМЕНДАЦИЯ: Используйте {working_exchanges[0]['name']} для анализа")
-    print("   Но лучше использовать агрегированные данные со всех бирж!")
+if failed_exchanges:
+    print(f"\n❌ НЕ РАБОТАЮТ: {', '.join(failed_exchanges)}")
