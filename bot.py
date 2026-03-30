@@ -33,8 +33,11 @@ SESSIONS = {
 }
 
 def get_current_session():
+    """Определяет текущую торговую сессию по МСК"""
     now = datetime.now()
-    current_hour = now.hour
+    # Переводим в МСК (UTC+3)
+    msk_hour = (now.hour + 3) % 24
+    
     if 10 <= current_hour < 16:
         return 'london'
     elif 16 <= current_hour < 22:
