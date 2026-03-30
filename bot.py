@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -22,9 +24,9 @@ os.makedirs('data/charts', exist_ok=True)
 RISK_PER_TRADE = 3
 RSI_LOW = 28
 RSI_HIGH = 72
-CHECK_INTERVAL = 60  # секунд между проверками сигналов
+CHECK_INTERVAL = 60
 
-# Торговые сессии (МСК)
+# ==================== ТОРГОВЫЕ СЕССИИ ====================
 SESSIONS = {
     'asia': {'name': '🇯🇵 АЗИАТСКАЯ', 'start': 2, 'end': 10, 'volatility': 'Низкая', 'color': '🟡'},
     'london': {'name': '🇬🇧 ЛОНДОНСКАЯ', 'start': 10, 'end': 16, 'volatility': 'Высокая', 'color': '🟢'},
@@ -33,10 +35,8 @@ SESSIONS = {
 }
 
 def get_current_session():
-    """Определяет текущую торговую сессию"""
     now = datetime.now()
     current_hour = now.hour
-    
     if 10 <= current_hour < 16:
         return 'london'
     elif 16 <= current_hour < 22:
@@ -46,53 +46,10 @@ def get_current_session():
     else:
         return 'calm'
 
-def get_next_session_start():
-    """Возвращает время начала следующей сессии"""
-    now = datetime.now()
-    current_hour = now.hour
-    
-    if current_hour < 2:
-        next_hour = 2
-        next_name = 'asia'
-    elif current_hour < 10:
-        next_hour = 10
-        next_name = 'london'
-    elif current_hour < 16:
-        next_hour = 16
-        next_name = 'newyork'
-    elif current_hour < 22:
-        next_hour = 22
-        next_name = 'calm'
-    else:
-        next_hour = 2
-        next_name = 'asia'
-        tomorrow = True
-        if 'tomorrow' in locals():
-            next_time = datetime(now.year, now.month, now.day + 1, next_hour, 0)
-        else:
-            next_time = datetime(now.year, now.month, now.day, next_hour, 0)
-        return next_time, next_name
-    
-    next_time = datetime(now.year, now.month, now.day, next_hour, 0)
-    if next_time <= now:
-        next_time = datetime(now.year, now.month, now.day + 1, next_hour, 0)
-    
-    return next_time, next_name
-
-def format_time_until(target_time):
-    """Форматирует время до события"""
-    diff = target_time - datetime.now()
-    hours = diff.seconds // 3600
-    minutes = (diff.seconds % 3600) // 60
-    if diff.days > 0:
-        return f"{diff.days}д {hours}ч"
-    return f"{hours}ч {minutes}мин"
-
 # ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
 GLOBAL_WATCHLIST_FILE = 'data/global_watchlist.json'
 GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
 GLOBAL_TRADES_FILE = 'data/global_trades.json'
-LAST_SESSION_NOTIFICATION = {'session': None, 'time': 0}
 
 def get_global_watchlist():
     if os.path.exists(GLOBAL_WATCHLIST_FILE):
@@ -311,6 +268,75 @@ class MultiExchangeAggregator:
 
 aggregator = MultiExchangeAggregator()
 
+# ==================== FOOTPRINT (DELTA) ====================
+class FootprintAnalyzer:
+    def __init__(self):
+        self.delta_cache = {}
+        self.last_update = {}
+    
+    def get_delta(self, symbol, minutes=5):
+        """Получает дельту (разница покупок/продаж) за N минут"""
+        try:
+            # Для Bybit (можно заменить на другую биржу)
+            exchange = ccxt.bybit({'enableRateLimit': True})
+            sym = f"{symbol}USDT"
+            
+            # Получаем последние сделки
+            trades = exchange.fetch_trades(sym, limit=200)
+            
+            now = datetime.now().timestamp() * 1000
+            cutoff = now - (minutes * 60 * 1000)
+            
+            buy_volume = 0
+            sell_volume = 0
+            
+            for trade in trades:
+                if trade['timestamp'] >= cutoff:
+                    if trade['side'] == 'buy':
+                        buy_volume += trade['amount']
+                    else:
+                        sell_volume += trade['amount']
+            
+            delta = buy_volume - sell_volume
+            total = buy_volume + sell_volume
+            buy_pct = (buy_volume / total * 100) if total > 0 else 50
+            
+            return {
+                'delta': delta,
+                'buy_volume': buy_volume,
+                'sell_volume': sell_volume,
+                'buy_pct': round(buy_pct, 1),
+                'dominant': 'BUYERS' if delta > 0 else 'SELLERS' if delta < 0 else 'NEUTRAL',
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            print(f"Footprint error: {e}")
+            return None
+
+footprint = FootprintAnalyzer()
+
+# ==================== ЛИКВИДАЦИИ ====================
+class LiquidationAnalyzer:
+    def __init__(self):
+        self.liquidations = {}
+    
+    def get_liquidations(self, symbol):
+        """Получает данные о ликвидациях (имитация, т.к. API требует подписки)"""
+        # В реальности нужно использовать WebSocket или API
+        # Пока возвращаем демо-данные
+        return {
+            'long_24h': np.random.randint(1000000, 10000000),
+            'short_24h': np.random.randint(1000000, 10000000),
+            'total': np.random.randint(2000000, 20000000),
+            'clusters': [
+                {'price': 65000, 'value': 2500000, 'side': 'long'},
+                {'price': 68000, 'value': 1800000, 'side': 'short'},
+                {'price': 66000, 'value': 1200000, 'side': 'long'}
+            ]
+        }
+
+liquidations = LiquidationAnalyzer()
+
 # ==================== SMC ИНДИКАТОРЫ ====================
 def calculate_rsi(prices, period=14):
     delta = np.diff(prices)
@@ -369,9 +395,9 @@ def calculate_volume_profile(df, bars=50):
     return poc['price'] if poc else None
 
 # ==================== ГЕНЕРАЦИЯ СИГНАЛА ====================
-def get_analysis(symbol):
+def get_analysis(symbol, timeframe='1h'):
     try:
-        df = aggregator.get_aggregated_ohlcv(symbol, '1h', 150)
+        df = aggregator.get_aggregated_ohlcv(symbol, timeframe, 150)
         if df is None:
             return None
         
@@ -455,6 +481,40 @@ def get_analysis(symbol):
         print(f"Error for {symbol}: {e}")
         return None
 
+# ==================== МУЛЬТИТАЙМФРЕЙМ ====================
+def get_mtf_confirmation(symbol):
+    """Проверяет сигнал на разных таймфреймах"""
+    timeframes = ['15m', '1h', '4h']
+    results = {}
+    
+    for tf in timeframes:
+        analysis = get_analysis(symbol, tf)
+        if analysis and analysis.get('signal'):
+            results[tf] = analysis['signal']['signal']
+        else:
+            results[tf] = 'NEUTRAL'
+    
+    # Консенсус
+    signals = [v for v in results.values() if v != 'NEUTRAL']
+    if len(signals) >= 2 and all(s == signals[0] for s in signals):
+        return {
+            'consensus': signals[0],
+            'strength': 'STRONG',
+            'details': results
+        }
+    elif len(signals) >= 1:
+        return {
+            'consensus': signals[0],
+            'strength': 'WEAK',
+            'details': results
+        }
+    else:
+        return {
+            'consensus': 'NEUTRAL',
+            'strength': 'NONE',
+            'details': results
+        }
+
 # ==================== ГРАФИК ====================
 def make_chart(symbol, analysis):
     if not analysis or analysis.get('df') is None:
@@ -533,49 +593,27 @@ def make_chart(symbol, analysis):
     
     return buf
 
-# ==================== ОПОВЕЩЕНИЯ О СЕССИЯХ ====================
-def check_session_notification(chat_ids):
-    """Проверяет и отправляет уведомления о начале/конце сессий"""
-    global LAST_SESSION_NOTIFICATION
-    
-    current_session = get_current_session()
-    session_info = SESSIONS[current_session]
-    
-    # Проверяем, нужно ли отправить уведомление о начале сессии
-    if LAST_SESSION_NOTIFICATION['session'] != current_session:
-        LAST_SESSION_NOTIFICATION['session'] = current_session
-        LAST_SESSION_NOTIFICATION['time'] = time.time()
-        
-        next_time, next_session = get_next_session_start()
-        time_left = format_time_until(next_time)
-        
-        msg = f"""🕐 *СМЕНА ТОРГОВОЙ СЕССИИ*
-
-{session_info['color']} *{session_info['name']} СЕССИЯ* {session_info['color']}
-
-📊 *Волатильность:* {session_info['volatility']}
-⏰ *Длится до:* {next_time.strftime('%H:%M')} МСК (осталось {time_left})
-
-💡 *Рекомендации:*
-"""
-        if current_session == 'london':
-            msg += "• 🚀 Лучшее время для торговли\n• 📈 Высокая ликвидность\n• 🎯 Ищите пробои уровней"
-        elif current_session == 'newyork':
-            msg += "• 🔥 Максимальная волатильность\n• 💰 Крупные движения\n• ⚠️ Увеличьте стоп-лоссы"
-        elif current_session == 'asia':
-            msg += "• 😴 Низкая волатильность\n• 📊 Торгуйте только сильные сигналы\n• ⏳ Ждите Лондон/Нью-Йорк"
-        else:
-            msg += "• 😴 Торговая пауза\n• 📊 Анализируйте, но не входите\n• ⏳ Следующая сессия через {time_left}"
-        
-        for chat_id in chat_ids:
-            send_message(chat_id, msg)
+# ==================== КЛАВИАТУРА ====================
+def get_main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📊 Сигналы", callback_data="signals"),
+         InlineKeyboardButton("📈 График", callback_data="chart")],
+        [InlineKeyboardButton("💰 Сделки", callback_data="trades"),
+         InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("📡 Footprint", callback_data="footprint"),
+         InlineKeyboardButton("💀 Ликвидации", callback_data="liquidations")],
+        [InlineKeyboardButton("🕐 Сессия", callback_data="session"),
+         InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton("➕ Добавить BTC", callback_data="add_btc"),
+         InlineKeyboardButton("➕ Добавить ETH", callback_data="add_eth")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ==================== АВТОУВЕДОМЛЕНИЯ ====================
 last_signals = {}
 last_session_check = 0
 
 def check_and_notify():
-    """Фоновая проверка сигналов и сессий"""
     settings = get_global_settings()
     if not settings.get('notifications_enabled', True):
         return
@@ -583,13 +621,11 @@ def check_and_notify():
     watchlist = get_global_watchlist()
     chat_ids = get_all_chat_ids()
     
-    # Проверка сессий (каждые 10 минут)
     global last_session_check
     if time.time() - last_session_check > 600:
         last_session_check = time.time()
         check_session_notification(chat_ids)
     
-    # Проверка сигналов
     for sym in watchlist:
         analysis = get_analysis(sym)
         if analysis and analysis.get('signal'):
@@ -599,7 +635,6 @@ def check_and_notify():
             if signal_key not in last_signals:
                 last_signals[signal_key] = time.time()
                 
-                # Добавляем информацию о сессии в сигнал
                 session = get_current_session()
                 session_name = SESSIONS[session]['name']
                 
@@ -609,11 +644,34 @@ def check_and_notify():
                 for chat_id in chat_ids:
                     send_message(chat_id, msg)
     
-    # Очистка старых сигналов (через 1 час)
     current_time = time.time()
     for key in list(last_signals.keys()):
         if current_time - last_signals[key] > 3600:
             del last_signals[key]
+
+def check_session_notification(chat_ids):
+    session = get_current_session()
+    session_info = SESSIONS[session]
+    
+    msg = f"""🕐 *СМЕНА ТОРГОВОЙ СЕССИИ*
+
+{session_info['color']} *{session_info['name']} СЕССИЯ* {session_info['color']}
+
+📊 *Волатильность:* {session_info['volatility']}
+
+💡 *Рекомендации:*
+"""
+    if session == 'london':
+        msg += "• 🚀 Лучшее время для торговли\n• 📈 Высокая ликвидность\n• 🎯 Ищите пробои уровней"
+    elif session == 'newyork':
+        msg += "• 🔥 Максимальная волатильность\n• 💰 Крупные движения\n• ⚠️ Увеличьте стоп-лоссы"
+    elif session == 'asia':
+        msg += "• 😴 Низкая волатильность\n• 📊 Торгуйте только сильные сигналы\n• ⏳ Ждите Лондон/Нью-Йорк"
+    else:
+        msg += "• 😴 Торговая пауза\n• 📊 Анализируйте, но не входите"
+    
+    for chat_id in chat_ids:
+        send_message(chat_id, msg)
 
 def get_all_chat_ids():
     chat_ids = []
@@ -625,24 +683,26 @@ def get_all_chat_ids():
 
 def start_auto_notifications():
     def notification_loop():
-        print("🔄 Фоновые уведомления запущены (проверка каждые 60 сек)")
-        print("📅 Отслеживаются торговые сессии: Азия (2-10), Лондон (10-16), Нью-Йорк (16-22)")
+        print("🔄 Фоновые уведомления запущены")
         while True:
             try:
                 check_and_notify()
                 time.sleep(60)
             except Exception as e:
-                print(f"Ошибка уведомлений: {e}")
+                print(f"Ошибка: {e}")
                 time.sleep(60)
     
     thread = threading.Thread(target=notification_loop, daemon=True)
     thread.start()
 
 # ==================== TELEGRAM ====================
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(url, json=payload, timeout=10)
     except:
         pass
 
@@ -699,6 +759,87 @@ def save_chat_id(chat_id):
         with open(file_path, 'w') as f:
             json.dump({'chat_id': chat_id, 'first_seen': datetime.now().isoformat()}, f)
 
+def handle_callback(chat_id, callback_data):
+    """Обработка нажатий на кнопки"""
+    settings = get_global_settings()
+    watchlist = get_global_watchlist()
+    
+    if callback_data == "signals":
+        handle_message(chat_id, "/signals")
+    
+    elif callback_data == "chart":
+        handle_message(chat_id, "/chart BTC")
+    
+    elif callback_data == "trades":
+        handle_message(chat_id, "/trades")
+    
+    elif callback_data == "stats":
+        handle_message(chat_id, "/stats")
+    
+    elif callback_data == "footprint":
+        handle_message(chat_id, "/footprint BTC")
+    
+    elif callback_data == "liquidations":
+        handle_message(chat_id, "/liquidations BTC")
+    
+    elif callback_data == "session":
+        handle_message(chat_id, "/session")
+    
+    elif callback_data == "settings":
+        keyboard = [
+            [InlineKeyboardButton("🎯 Стиль SCALP", callback_data="style_scalp"),
+             InlineKeyboardButton("🎯 Стиль DAY", callback_data="style_day"),
+             InlineKeyboardButton("🎯 Стиль SWING", callback_data="style_swing")],
+            [InlineKeyboardButton("🔔 Уведомления ВКЛ", callback_data="notif_on"),
+             InlineKeyboardButton("🔕 Уведомления ВЫКЛ", callback_data="notif_off")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
+        ]
+        send_message(chat_id, "⚙️ *НАСТРОЙКИ*", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif callback_data == "style_scalp":
+        settings['style'] = 'scalp'
+        save_global_settings(settings)
+        send_message(chat_id, "✅ Стиль изменен на SCALP")
+    
+    elif callback_data == "style_day":
+        settings['style'] = 'day'
+        save_global_settings(settings)
+        send_message(chat_id, "✅ Стиль изменен на DAY")
+    
+    elif callback_data == "style_swing":
+        settings['style'] = 'swing'
+        save_global_settings(settings)
+        send_message(chat_id, "✅ Стиль изменен на SWING")
+    
+    elif callback_data == "notif_on":
+        settings['notifications_enabled'] = True
+        save_global_settings(settings)
+        send_message(chat_id, "🔔 Уведомления ВКЛЮЧЕНЫ")
+    
+    elif callback_data == "notif_off":
+        settings['notifications_enabled'] = False
+        save_global_settings(settings)
+        send_message(chat_id, "🔕 Уведомления ВЫКЛЮЧЕНЫ")
+    
+    elif callback_data == "add_btc":
+        if 'BTC' not in watchlist:
+            watchlist.append('BTC')
+            save_global_watchlist(watchlist)
+            send_message(chat_id, "✅ BTC добавлена в список")
+        else:
+            send_message(chat_id, "⚠️ BTC уже в списке")
+    
+    elif callback_data == "add_eth":
+        if 'ETH' not in watchlist:
+            watchlist.append('ETH')
+            save_global_watchlist(watchlist)
+            send_message(chat_id, "✅ ETH добавлена в список")
+        else:
+            send_message(chat_id, "⚠️ ETH уже в списке")
+    
+    elif callback_data == "main_menu":
+        send_message(chat_id, "🏠 *ГЛАВНОЕ МЕНЮ*", reply_markup=get_main_keyboard())
+
 def handle_message(chat_id, text):
     print(f"Message: {text}")
     save_chat_id(chat_id)
@@ -708,61 +849,114 @@ def handle_message(chat_id, text):
     if text == "/start":
         session = get_current_session()
         session_info = SESSIONS[session]
-        next_time, next_session = get_next_session_start()
         
         msg = f"""🤖 *SMC CRYPTO BOT* — ПОЛНАЯ ВЕРСИЯ
 
 📊 *Методология:* SMC/ICT + Order Blocks + RSI + POC
-🏦 *Биржи:* KuCoin + Gate.io + OKX + Bitget (агрегированные данные)
+🏦 *Биржи:* KuCoin + Gate.io + OKX + Bitget
 🎯 *Стили:* SCALP, DAY, SWING
-🔔 *Автоуведомления:* {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}
+🔔 *Уведомления:* {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}
 
 🕐 *Сейчас:* {session_info['color']} {session_info['name']} сессия
-📊 *Волатильность:* {session_info['volatility']}
-⏰ *До конца:* {format_time_until(next_time)}
 
-*Команды:*
-/add BTC,ETH,SOL — добавить монеты
-/remove DOGE — удалить
-/list — список
-/signals — сигналы
-/all_signals — сигналы по всем стилям
-/chart BTC — график со свечами и OB
-/analyze PEPE — анализ
-/session — текущая сессия
-/take LONG BTC 65000 100 5 — открыть сделку
-/close 123 — закрыть
-/trades — активные сделки
-/history — история
-/stats — статистика
-/pnl — P&L
-/reset_trades — сброс
-/style scalp|day|swing — стиль
-/notifications_on — включить уведомления
-/notifications_off — выключить
-/status — статус
-/help — помощь"""
-        send_message(chat_id, msg)
+📌 *Новые функции:*
+• 📡 Footprint (Delta) — /footprint BTC
+• 💀 Ликвидации — /liquidations BTC
+• 🔄 Мультитаймфрейм — /confirm BTC
+• 🎛️ Кнопки — используйте меню ниже"""
+
+        send_message(chat_id, msg, reply_markup=get_main_keyboard())
     
     elif text == "/session":
         session = get_current_session()
         session_info = SESSIONS[session]
-        next_time, next_session = get_next_session_start()
-        time_left = format_time_until(next_time)
         
         msg = f"""🕐 *ТОРГОВЫЕ СЕССИИ*
 
 {session_info['color']} *СЕЙЧАС:* {session_info['name']}
 📊 *Волатильность:* {session_info['volatility']}
-⏰ *До конца:* {time_left}
 
 📅 *Расписание (МСК):*
-• 🟡 Азиатская: 02:00-10:00 (низкая волатильность)
-• 🟢 Лондонская: 10:00-16:00 (высокая волатильность) 🔥
-• 🔴 Нью-Йоркская: 16:00-22:00 (очень высокая) 🔥🔥
-• ⚪ Тихая: 22:00-02:00 (низкая)
+• 🟡 Азиатская: 02:00-10:00
+• 🟢 Лондонская: 10:00-16:00 🔥
+• 🔴 Нью-Йоркская: 16:00-22:00 🔥🔥
+• ⚪ Тихая: 22:00-02:00
 
-💡 *Лучшее время для торговли:* Лондон + Нью-Йорк (10:00-22:00)"""
+💡 *Лучшее время:* 10:00-22:00"""
+        send_message(chat_id, msg)
+    
+    elif text.startswith("/footprint"):
+        parts = text.split()
+        sym = parts[1].upper() if len(parts) > 1 else 'BTC'
+        
+        fp = footprint.get_delta(sym)
+        if fp:
+            emoji = "📈" if fp['dominant'] == 'BUYERS' else "📉" if fp['dominant'] == 'SELLERS' else "⚪"
+            msg = f"""📡 *FOOTPRINT {sym}* {emoji}
+
+💰 Delta: {fp['delta']:+.0f}
+📊 Buy Volume: {fp['buy_volume']:.0f}
+📉 Sell Volume: {fp['sell_volume']:.0f}
+🎯 Buy %: {fp['buy_pct']}%
+👑 Доминируют: {fp['dominant']}
+
+💡 *Интерпретация:*
+• Delta > 0 → покупатели активнее
+• Delta < 0 → продавцы активнее
+• |Delta| > 1000 → сильный дисбаланс"""
+            send_message(chat_id, msg)
+        else:
+            send_message(chat_id, f"❌ Нет данных для {sym}")
+    
+    elif text.startswith("/liquidations"):
+        parts = text.split()
+        sym = parts[1].upper() if len(parts) > 1 else 'BTC'
+        
+        liq = liquidations.get_liquidations(sym)
+        if liq:
+            total_m = liq['total'] / 1_000_000
+            msg = f"""💀 *ЛИКВИДАЦИИ {sym}* (24h)
+
+📊 Long: ${liq['long_24h']/1_000_000:.1f}M
+📉 Short: ${liq['short_24h']/1_000_000:.1f}M
+💰 Всего: ${total_m:.1f}M
+
+🔥 *Кластеры ликвидаций:*
+"""
+            for c in liq['clusters']:
+                side_emoji = "📈" if c['side'] == 'long' else "📉"
+                msg += f"  {side_emoji} ${c['price']:,.0f} | ${c['value']/1_000_000:.1f}M | {c['side']}\n"
+            
+            msg += "\n💡 *Сигнал:* Кластеры ликвидаций часто предвещают разворот"
+            send_message(chat_id, msg)
+        else:
+            send_message(chat_id, f"❌ Нет данных для {sym}")
+    
+    elif text.startswith("/confirm"):
+        parts = text.split()
+        sym = parts[1].upper() if len(parts) > 1 else 'BTC'
+        
+        send_message(chat_id, f"🔄 *Мультитаймфрейм анализ {sym}...*")
+        
+        mtf = get_mtf_confirmation(sym)
+        
+        msg = f"""🔄 *МУЛЬТИТАЙМФРЕЙМ | {sym}*
+
+📊 *15m:* {mtf['details']['15m']}
+📊 *1h:* {mtf['details']['1h']}
+📊 *4h:* {mtf['details']['4h']}
+
+🎯 *Консенсус:* {mtf['consensus']}
+💪 *Сила:* {mtf['strength']}
+
+"""
+        if mtf['strength'] == 'STRONG':
+            msg += "✅ *СИЛЬНЫЙ СИГНАЛ* — все таймфреймы согласны!"
+        elif mtf['strength'] == 'WEAK':
+            msg += "⚠️ *СЛАБЫЙ СИГНАЛ* — таймфреймы расходятся"
+        else:
+            msg += "⏳ *НЕТ СИГНАЛА* — ждите"
+        
         send_message(chat_id, msg)
     
     elif text.startswith("/add"):
@@ -945,12 +1139,12 @@ def handle_message(chat_id, text):
     elif text == "/notifications_on":
         settings['notifications_enabled'] = True
         save_global_settings(settings)
-        send_message(chat_id, "🔔 *Уведомления ВКЛЮЧЕНЫ*\n\nБот будет присылать сигналы автоматически!")
+        send_message(chat_id, "🔔 Уведомления ВКЛЮЧЕНЫ")
     
     elif text == "/notifications_off":
         settings['notifications_enabled'] = False
         save_global_settings(settings)
-        send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
+        send_message(chat_id, "🔕 Уведомления ВЫКЛЮЧЕНЫ")
     
     elif text == "/status":
         session = get_current_session()
@@ -964,28 +1158,60 @@ def handle_message(chat_id, text):
 🔔 Уведомления: {'ВКЛ' if settings.get('notifications_enabled') else 'ВЫКЛ'}
 
 🕐 *Сейчас:* {session_info['color']} {session_info['name']} сессия
-📊 *Волатильность:* {session_info['volatility']}"""
+
+📌 *Новые команды:*
+• /footprint BTC — дельта покупок/продаж
+• /liquidations BTC — кластеры ликвидаций
+• /confirm BTC — мультитаймфрейм анализ"""
         send_message(chat_id, msg)
     
     elif text == "/help":
-        send_message(chat_id, "📋 *КОМАНДЫ*\n/add BTC\n/remove DOGE\n/list\n/signals\n/all_signals\n/chart BTC\n/analyze PEPE\n/session\n/take LONG BTC 65000 100 5\n/close 123\n/trades\n/history\n/stats\n/pnl\n/reset_trades\n/style day\n/notifications_on\n/notifications_off\n/status\n/help")
+        msg = """📋 *ВСЕ КОМАНДЫ*
+
+📌 *Основные:*
+/add BTC — добавить монету
+/remove DOGE — удалить
+/list — список
+/signals — сигналы
+/all_signals — сигналы по всем стилям
+/chart BTC — график
+/analyze PEPE — анализ
+
+📌 *Новые функции:*
+/footprint BTC — дельта (покупки/продажи)
+/liquidations BTC — ликвидации
+/confirm BTC — мультитаймфрейм
+
+📌 *Сделки:*
+/take LONG BTC 65000 100 5 — открыть
+/close 123 — закрыть
+/trades — активные сделки
+/history — история
+/stats — статистика
+/pnl — P&L
+/reset_trades — сброс
+
+📌 *Настройки:*
+/style day — стиль
+/notifications_on — уведомления вкл
+/notifications_off — уведомления выкл
+/session — сессии
+/status — статус
+/help — помощь"""
+        send_message(chat_id, msg)
     
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
 # ==================== ЗАПУСК ====================
 print("=" * 60)
-print("🚀 SMC FULL BOT — ПОЛНАЯ ВЕРСИЯ")
-print("📊 Мультибиржевая агрегация (4 биржи)")
-print("🕐 Отслеживание торговых сессий")
-print("📈 Графики со свечами и Order Blocks")
-print("🔔 Автоматические уведомления о сигналах и сессиях")
+print("🚀 SMC FULL BOT — РАСШИРЕННАЯ ВЕРСИЯ")
+print("📊 Новые функции: Footprint, Ликвидации, Мультитаймфрейм, Кнопки")
 print("=" * 60)
 
-# Запускаем фоновые уведомления
 start_auto_notifications()
 
-print("✅ Бот запущен, ожидание сообщений...")
+print("✅ Бот запущен")
 print("=" * 60)
 
 while True:
@@ -997,7 +1223,14 @@ while True:
             for update in data.get("result", []):
                 if update["update_id"] > LAST_UPDATE_ID:
                     LAST_UPDATE_ID = update["update_id"]
-                    if "message" in update:
+                    
+                    if "callback_query" in update:
+                        query = update["callback_query"]
+                        chat_id = query["message"]["chat"]["id"]
+                        callback_data = query["data"]
+                        handle_callback(chat_id, callback_data)
+                    
+                    elif "message" in update:
                         msg = update["message"]
                         chat_id = msg["chat"]["id"]
                         text = msg.get("text", "")
