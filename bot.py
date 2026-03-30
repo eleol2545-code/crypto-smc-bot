@@ -2,6 +2,7 @@ import ccxt
 import requests
 import time
 import os
+import urllib.parse
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 
@@ -35,10 +36,20 @@ if not proxy1_works and not proxy2_works:
     print("💡 Нужны новые прокси")
     exit(1)
 
-WORKING_PROXY = PROXY1 if proxy1_works else PROXY2
-print(f"\n✅ Используем прокси: {WORKING_PROXY[:50]}...")
+WORKING_PROXY_URL = PROXY1 if proxy1_works else PROXY2
+print(f"\n✅ Используем прокси: {WORKING_PROXY_URL[:50]}...")
 
-# ==================== ПРОВЕРКА БИРЖ (БЕЗ КОНФЛИКТА) ====================
+# Парсим прокси для правильного формата
+from urllib.parse import urlparse
+parsed = urlparse(WORKING_PROXY_URL)
+proxy_host = parsed.hostname
+proxy_port = parsed.port
+proxy_user = parsed.username
+proxy_pass = parsed.password
+
+print(f"📡 Хост: {proxy_host}, Порт: {proxy_port}, Логин: {proxy_user}")
+
+# ==================== ПРОВЕРКА БИРЖ ====================
 print("\n" + "=" * 60)
 print("🏦 ПРОВЕРКА БИРЖ ЧЕРЕЗ ПРОКСИ")
 print("=" * 60)
@@ -47,24 +58,25 @@ def test_exchange(name, exchange_class, symbol, params=None):
     if params is None:
         params = {}
     try:
-        # ВАЖНО: не используем http_proxy/https_proxy отдельно
-        # Вместо этого используем aiohttp_proxy или настраиваем через session
         ex = exchange_class(params)
         ex.enableRateLimit = True
         
-        # Правильный способ установки прокси для ccxt
-        ex.proxy = WORKING_PROXY
-        ex.proxy_type = 'socks5'  # socks5 или http
+        # Правильный способ установки SOCKS5 прокси для ccxt
+        ex.proxy = f"socks5://{proxy_host}:{proxy_port}"
+        if proxy_user and proxy_pass:
+            ex.proxy_login = proxy_user
+            ex.proxy_password = proxy_pass
+        ex.proxy_type = 'socks5'
         
+        print(f"   Пробуем {name}...")
         ticker = ex.fetch_ticker(symbol)
         print(f"✅ {name} - РАБОТАЕТ! Цена: ${ticker['last']:.2f}")
         return True, ex
     except Exception as e:
-        print(f"❌ {name} - НЕ РАБОТАЕТ: {str(e)[:80]}")
+        print(f"❌ {name} - НЕ РАБОТАЕТ: {str(e)[:100]}")
         return False, None
 
 exchanges = [
-    ("Binance", ccxt.binance, "BTC/USDT", {'options': {'defaultType': 'future'}}),
     ("Bybit", ccxt.bybit, "BTCUSDT", {'options': {'defaultType': 'linear'}}),
     ("KuCoin", ccxt.kucoin, "BTC/USDT", {}),
     ("Gate.io", ccxt.gateio, "BTC_USDT", {'options': {'defaultType': 'swap'}}),
@@ -92,36 +104,15 @@ print("=" * 60)
 if working_exchanges:
     print(f"\n✅ РАБОТАЮТ: {', '.join(working_exchanges)}")
     print(f"\n🎯 РЕКОМЕНДАЦИЯ: Используйте {working_exchanges[0]}")
-    print(f"\n📡 ТЕСТОВЫЙ ЗАПРОС К {working_exchanges[0]}...")
-    
-    # Делаем тестовый запрос к первой рабочей бирже
-    try:
-        if working_exchanges[0] == "Binance":
-            ticker = selected_exchange.fetch_ticker("BTC/USDT")
-        elif working_exchanges[0] == "Bybit":
-            ticker = selected_exchange.fetch_ticker("BTCUSDT")
-        elif working_exchanges[0] == "KuCoin":
-            ticker = selected_exchange.fetch_ticker("BTC/USDT")
-        else:
-            ticker = selected_exchange.fetch_ticker("BTC/USDT")
-        
-        print(f"\n✅ УСПЕШНО! BTC: ${ticker['last']:.2f}")
-        print(f"📈 24h объем: ${ticker.get('quoteVolume', 0):.0f}")
-        print(f"📊 Изменение: {ticker.get('percentage', 0):+.2f}%")
-        
-        print("\n" + "=" * 60)
-        print("🎉 ПРОКСИ И БИРЖА РАБОТАЮТ!")
-        print("💡 МОЖНО ЗАПУСКАТЬ ПОЛНОГО БОТА")
-        print("=" * 60)
-        
-    except Exception as e:
-        print(f"❌ Ошибка при тестовом запросе: {e}")
+    print("\n🎉 ПРОКСИ И БИРЖА РАБОТАЮТ!")
+    print("💡 МОЖНО ЗАПУСКАТЬ ПОЛНОГО БОТА")
+    print("=" * 60)
 else:
     print("\n❌ НИ ОДНА БИРЖА НЕ РАБОТАЕТ!")
     print("💡 Возможные причины:")
-    print("   1. Прокси не работают")
+    print("   1. Прокси не поддерживают SOCKS5 для ccxt")
     print("   2. Биржи блокируют прокси")
-    print("   3. Нужны новые прокси")
+    print("   3. Нужны HTTP прокси, а не SOCKS5")
     print("\n❌ БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ БИРЖИ!")
 
 print("\n" + "=" * 60)
