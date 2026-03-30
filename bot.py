@@ -1,91 +1,91 @@
+import ccxt
 import requests
 import time
-import ccxt
-import pandas as pd
-import numpy as np
-import json
-import os
-from datetime import datetime
 
-# ==================== НАСТРОЙКА SOCKS5 ПРОКСИ ====================
-# ВАШИ ПРОКСИ (проверьте, работают ли)
+# ==================== ВАШИ ПРОКСИ ====================
 PROXY1 = "socks5://bqd9tD8A:i6wUJxiU@155.212.48.112:63675"
 PROXY2 = "socks5://bqd9tD8A:i6wUJxiU@154.194.89.27:62841"
 
-# Пробуем первый прокси
-PROXY_URL = PROXY1
-PROXIES = {"http": PROXY1, "https": PROXY1}
+# ==================== ПРОВЕРКА ПРОКСИ ====================
+print("=" * 60)
+print("🔍 ПРОВЕРКА ПРОКСИ")
+print("=" * 60)
 
-# Проверяем прокси
-try:
-    r = requests.get("https://api.ipify.org", proxies=PROXIES, timeout=10)
-    print(f"✅ Прокси работает! Ваш IP: {r.text}")
-except Exception as e:
-    print(f"❌ Прокси 1 не работает: {e}")
-    print("Пробуем прокси 2...")
-    PROXY_URL = PROXY2
-    PROXIES = {"http": PROXY2, "https": PROXY2}
+def test_proxy(proxy_url):
     try:
-        r = requests.get("https://api.ipify.org", proxies=PROXIES, timeout=10)
-        print(f"✅ Прокси 2 работает! Ваш IP: {r.text}")
-    except:
-        print("❌ Оба прокси не работают")
-        PROXIES = None
-
-# ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ ЧЕРЕЗ ПРОКСИ ====================
-
-def create_exchange_with_proxy(exchange_class, params):
-    try:
-        exchange = exchange_class(params)
-        exchange.enableRateLimit = True
-        if PROXIES:
-            exchange.http_proxy = PROXY_URL
-            exchange.https_proxy = PROXY_URL
-        return exchange
-    except:
-        return None
-
-exchange = None
-exchange_name = None
-
-# Пробуем Binance (самая крупная)
-try:
-    ex = create_exchange_with_proxy(ccxt.binance, {'options': {'defaultType': 'future'}})
-    if ex:
-        ticker = ex.fetch_ticker('BTC/USDT')
-        exchange = ex
-        exchange_name = 'Binance'
-        print(f"✅ Binance подключена! BTC: ${ticker['last']:.2f}")
-except Exception as e:
-    print(f"Binance ошибка: {e}")
-
-# Если Binance не работает, пробуем Bybit
-if not exchange:
-    try:
-        ex = create_exchange_with_proxy(ccxt.bybit, {'options': {'defaultType': 'linear'}})
-        if ex:
-            ticker = ex.fetch_ticker('BTCUSDT')
-            exchange = ex
-            exchange_name = 'Bybit'
-            print(f"✅ Bybit подключена! BTC: ${ticker['last']:.2f}")
+        proxies = {"http": proxy_url, "https": proxy_url}
+        r = requests.get("https://api.ipify.org", proxies=proxies, timeout=10)
+        print(f"✅ ПРОКСИ РАБОТАЕТ! Ваш IP: {r.text}")
+        return True
     except Exception as e:
-        print(f"Bybit ошибка: {e}")
+        print(f"❌ Прокси не работает: {e}")
+        return False
 
-# Если Bybit не работает, пробуем KuCoin
-if not exchange:
-    try:
-        ex = create_exchange_with_proxy(ccxt.kucoin, {})
-        if ex:
-            ticker = ex.fetch_ticker('BTC/USDT')
-            exchange = ex
-            exchange_name = 'KuCoin'
-            print(f"✅ KuCoin подключена! BTC: ${ticker['last']:.2f}")
-    except Exception as e:
-        print(f"KuCoin ошибка: {e}")
+print("\n📡 Проверяем прокси 1...")
+proxy1_works = test_proxy(PROXY1)
 
-if not exchange:
-    print("❌ НИ ОДНА БИРЖА НЕ ПОДКЛЮЧИЛАСЬ! Проверьте прокси.")
+print("\n📡 Проверяем прокси 2...")
+proxy2_works = test_proxy(PROXY2)
+
+if not proxy1_works and not proxy2_works:
+    print("\n❌ НИ ОДИН ПРОКСИ НЕ РАБОТАЕТ!")
+    print("💡 Нужны новые прокси")
     exit(1)
 
-# ==================== ОСТАЛЬНОЙ КОД (SMC, ТЕЛЕГРАМ, СДЕЛКИ) ====================
-# ... (весь остальной код из предыдущей версии)
+# Выбираем рабочий прокси
+WORKING_PROXY = PROXY1 if proxy1_works else PROXY2
+print(f"\n✅ Используем прокси: {WORKING_PROXY[:50]}...")
+
+# ==================== ПРОВЕРКА БИРЖ ====================
+print("\n" + "=" * 60)
+print("🏦 ПРОВЕРКА БИРЖ ЧЕРЕЗ ПРОКСИ")
+print("=" * 60)
+
+def test_exchange(name, exchange_class, symbol, params=None):
+    if params is None:
+        params = {}
+    try:
+        ex = exchange_class(params)
+        ex.enableRateLimit = True
+        ex.http_proxy = WORKING_PROXY
+        ex.https_proxy = WORKING_PROXY
+        
+        ticker = ex.fetch_ticker(symbol)
+        print(f"✅ {name} - РАБОТАЕТ! Цена: ${ticker['last']:.2f}")
+        return True
+    except Exception as e:
+        print(f"❌ {name} - НЕ РАБОТАЕТ: {str(e)[:80]}")
+        return False
+
+# Тестируем биржи
+exchanges = [
+    ("Binance", ccxt.binance, "BTC/USDT", {'options': {'defaultType': 'future'}}),
+    ("Bybit", ccxt.bybit, "BTCUSDT", {'options': {'defaultType': 'linear'}}),
+    ("KuCoin", ccxt.kucoin, "BTC/USDT", {}),
+    ("Gate.io", ccxt.gateio, "BTC_USDT", {'options': {'defaultType': 'swap'}}),
+    ("OKX", ccxt.okx, "BTC-USDT-SWAP", {'options': {'defaultType': 'swap'}}),
+]
+
+print("\n")
+working_exchanges = []
+for name, cls, symbol, params in exchanges:
+    if test_exchange(name, cls, symbol, params):
+        working_exchanges.append(name)
+    time.sleep(1)  # пауза чтобы не забанили
+
+# ==================== РЕЗУЛЬТАТ ====================
+print("\n" + "=" * 60)
+print("📊 РЕЗУЛЬТАТЫ ПРОВЕРКИ")
+print("=" * 60)
+
+if working_exchanges:
+    print(f"\n✅ РАБОТАЮТ: {', '.join(working_exchanges)}")
+    print(f"\n🎯 РЕКОМЕНДАЦИЯ: Используйте {working_exchanges[0]}")
+else:
+    print("\n❌ НИ ОДНА БИРЖА НЕ РАБОТАЕТ!")
+    print("💡 Возможные причины:")
+    print("   1. Прокси не работают")
+    print("   2. Биржи блокируют прокси")
+    print("   3. Нужны новые прокси")
+
+print("\n" + "=" * 60)
