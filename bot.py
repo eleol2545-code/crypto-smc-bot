@@ -556,93 +556,117 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
         print(f"Error for {symbol}: {e}")
         return None
 
-# ==================== РАСШИРЕННЫЙ ГРАФИК С SMC УРОВНЯМИ ====================
+# ==================== ГРАФИК ====================
 def generate_smc_chart(symbol, df, analysis, signal):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
-    df_plot = df.tail(100)
+    """Генерирует график с SMC уровнями"""
+    if df is None or len(df) < 10:
+        return None
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Берем последние 50 свечей
+    df_plot = df.tail(50)
     dates = df_plot['timestamp']
     
     # Рисуем свечи
     for i, row in df_plot.iterrows():
         color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
-        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=0.8)
-        ax1.add_patch(Rectangle((row['timestamp'] - pd.Timedelta(minutes=30), row['open']), pd.Timedelta(minutes=60), row['close'] - row['open'], facecolor=color, alpha=0.7, linewidth=0))
+        # Тень (high-low)
+        ax.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], 
+                color=color, linewidth=1)
+        # Тело (open-close)
+        ax.add_patch(Rectangle(
+            (row['timestamp'] - pd.Timedelta(minutes=30), min(row['open'], row['close'])),
+            pd.Timedelta(minutes=60), abs(row['close'] - row['open']),
+            facecolor=color, alpha=0.7, linewidth=0
+        ))
     
-    # Order Blocks
+    # Текущая цена
+    current_price = df['close'].iloc[-1]
+    ax.axhline(y=current_price, color='yellow', linestyle='-', linewidth=1.5, 
+               label=f'Price: ${current_price:.0f}')
+    
+    # Уровни из анализа
+    if analysis:
+        ax.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, 
+                   alpha=0.7, label=f'Support: ${analysis["support"]:.0f}')
+        ax.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, 
+                   alpha=0.7, label=f'Resistance: ${analysis["resistance"]:.0f}')
+        if analysis.get('poc'):
+            ax.axhline(y=analysis['poc'], color='yellow', linestyle=':', linewidth=1, 
+                       alpha=0.5, label=f'POC: ${analysis["poc"]:.0f}')
+    
+    # Order Blocks из сигнала
     if signal:
         for idx in range(len(df_plot)):
-            orig_idx = len(df) - 100 + idx
+            orig_idx = len(df) - 50 + idx
             if orig_idx < len(signal.get('bullish_ob', [])) and signal['bullish_ob'][orig_idx] == 1:
                 ob_h = signal['ob_high'][orig_idx]
                 ob_l = signal['ob_low'][orig_idx]
                 if ob_h > 0 and ob_l > 0:
-                    ax1.axhspan(ob_l, ob_h, alpha=0.2, color='green')
-                    ax1.text(dates.iloc[idx], ob_h, 'BUY OB', color='green', fontsize=7, ha='right')
+                    ax.axhspan(ob_l, ob_h, alpha=0.2, color='green')
+                    ax.text(dates.iloc[idx], ob_h, 'BUY OB', color='green', fontsize=7, ha='right')
             if orig_idx < len(signal.get('bearish_ob', [])) and signal['bearish_ob'][orig_idx] == 1:
                 ob_h = signal['ob_high'][orig_idx]
                 ob_l = signal['ob_low'][orig_idx]
                 if ob_h > 0 and ob_l > 0:
-                    ax1.axhspan(ob_l, ob_h, alpha=0.2, color='red')
-                    ax1.text(dates.iloc[idx], ob_h, 'SELL OB', color='red', fontsize=7, ha='right')
+                    ax.axhspan(ob_l, ob_h, alpha=0.2, color='red')
+                    ax.text(dates.iloc[idx], ob_h, 'SELL OB', color='red', fontsize=7, ha='right')
         
         # FVG
         for idx in range(len(df_plot)):
-            orig_idx = len(df) - 100 + idx
+            orig_idx = len(df) - 50 + idx
             if orig_idx < len(signal.get('fvg_bullish', [])) and signal['fvg_bullish'][orig_idx] == 1:
                 fvg_t = signal['fvg_top'][orig_idx]
                 fvg_b = signal['fvg_bottom'][orig_idx]
                 if fvg_t > 0 and fvg_b > 0:
-                    ax1.axhspan(fvg_b, fvg_t, alpha=0.15, color='lime')
+                    ax.axhspan(fvg_b, fvg_t, alpha=0.15, color='lime')
             if orig_idx < len(signal.get('fvg_bearish', [])) and signal['fvg_bearish'][orig_idx] == 1:
                 fvg_t = signal['fvg_top'][orig_idx]
                 fvg_b = signal['fvg_bottom'][orig_idx]
                 if fvg_t > 0 and fvg_b > 0:
-                    ax1.axhspan(fvg_b, fvg_t, alpha=0.15, color='orange')
-    
-    # POC
-    if analysis and analysis.get('poc'):
-        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', linewidth=1.5, alpha=0.7, label=f'POC: ${format_price(analysis["poc"])}')
-    
-    # Уровни поддержки/сопротивления
-    if analysis:
-        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, alpha=0.5, label=f'Support: ${format_price(analysis["support"])}')
-        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, alpha=0.5, label=f'Resistance: ${format_price(analysis["resistance"])}')
-    
-    # Уровни входа/выхода
-    if signal and signal.get('signal'):
-        entry = signal['entry']
-        sl = signal['sl']
-        tp = signal['tp']
-        color = 'green' if signal['signal'] == 'LONG' else 'red'
-        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, label=f'Entry: ${format_price(entry)}')
-        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, label=f'SL: ${format_price(sl)}')
-        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, label=f'TP: ${format_price(tp)}')
-        last_date = df_plot['timestamp'].iloc[-1]
-        ax1.annotate('ВХОД', xy=(last_date, entry), xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)), arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
-    
-    # Объем
-    colors = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df_plot['close'], df_plot['open'])]
-    ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
-    ax2.set_ylabel('Volume', color='white')
-    ax2.grid(True, alpha=0.2)
+                    ax.axhspan(fvg_b, fvg_t, alpha=0.15, color='orange')
+        
+        # Уровни входа/выхода
+        if signal.get('signal'):
+            entry = signal['entry']
+            sl = signal['sl']
+            tp = signal['tp']
+            color = 'green' if signal['signal'] == 'LONG' else 'red'
+            ax.axhline(y=entry, color=color, linestyle='-', linewidth=2, 
+                       label=f'Entry: ${entry:.0f}')
+            ax.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, 
+                       label=f'SL: ${sl:.0f}')
+            ax.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, 
+                       label=f'TP: ${tp:.0f}')
+            last_date = dates.iloc[-1]
+            ax.annotate('ВХОД', xy=(last_date, entry), 
+                       xytext=(last_date, entry * 1.02),
+                       arrowprops=dict(arrowstyle='->', color=color, lw=2),
+                       fontsize=10, fontweight='bold', color=color)
     
     # Оформление
-    ax1.set_title(f'{symbol} | SMC Analysis', fontsize=14, fontweight='bold', color='white')
-    ax1.set_ylabel('Price (USDT)', color='white')
-    ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
-    ax1.grid(True, alpha=0.2)
-    ax1.set_facecolor('#0a0a0a')
-    ax2.set_facecolor('#0a0a0a')
+    title = f'{symbol} | SMC Analysis'
+    if signal and signal.get('signal'):
+        title += f' | {signal["signal"]} СИГНАЛ ({signal["confidence"]}%)'
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('Price (USDT)', color='white')
+    ax.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
+    ax.grid(True, alpha=0.2)
+    ax.set_facecolor('#0a0a0a')
     fig.patch.set_facecolor('#0a0a0a')
     
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+    # Форматирование дат
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
     plt.xticks(rotation=45)
     plt.tight_layout()
     
+    # Сохраняем
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
     buf.seek(0)
     plt.close()
+    
     return buf
 
 # ==================== TELEGRAM БОТ ====================
@@ -718,7 +742,7 @@ def handle_message(chat_id, text):
 /list — список монет
 /signals — сигналы (ваш стиль)
 /all_signals — сигналы по ВСЕМ стилям!
-/chart BTC — график с уровнями SMC (OB, FVG, POC)
+/chart BTC — график с уровнями SMC
 /analyze PEPE — анализ ЛЮБОЙ монеты
 /take LONG BTC 65000 100 5 — открыть сделку (размер, плечо)
 /close 123 — закрыть сделку
