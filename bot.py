@@ -1,118 +1,104 @@
 import ccxt
 import requests
 import time
-import os
-import urllib.parse
 
-TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
-
-# ==================== ВАШИ ПРОКСИ ====================
-PROXY1 = "socks5://bqd9tD8A:i6wUJxiU@155.212.48.112:63675"
-PROXY2 = "socks5://bqd9tD8A:i6wUJxiU@154.194.89.27:62841"
+# ==================== ПРОКСИ ====================
+PROXIES_LIST = [
+    {
+        'host': '155.212.48.112',
+        'port': '63674',
+        'user': 'bqd9tD8A',
+        'pass': 'i6wUJxiU',
+        'type': 'http'
+    },
+    {
+        'host': '92.61.111.34',
+        'port': '51225',
+        'user': 'izupU25r3SLfpho',
+        'pass': 'EV4nseGTeBlpY17',
+        'type': 'socks5'
+    },
+]
 
 print("=" * 60)
-print("🔍 ПРОВЕРКА ПРОКСИ И БИРЖ")
+print("🔍 ТЕСТ ВСЕХ ПРОКСИ")
 print("=" * 60)
 
-# ==================== ПРОВЕРКА ПРОКСИ ====================
-def test_proxy(proxy_url):
+def test_proxy(proxy_info):
+    if proxy_info['type'] == 'http':
+        proxy_url = f"http://{proxy_info['user']}:{proxy_info['pass']}@{proxy_info['host']}:{proxy_info['port']}"
+    else:
+        proxy_url = f"socks5://{proxy_info['user']}:{proxy_info['pass']}@{proxy_info['host']}:{proxy_info['port']}"
+    
     try:
         proxies = {"http": proxy_url, "https": proxy_url}
         r = requests.get("https://api.ipify.org", proxies=proxies, timeout=10)
-        print(f"✅ ПРОКСИ РАБОТАЕТ! IP: {r.text}")
+        print(f"✅ {proxy_info['type'].upper()} прокси РАБОТАЕТ! IP: {r.text}")
         return True
     except Exception as e:
-        print(f"❌ Прокси не работает: {e}")
+        print(f"❌ {proxy_info['type'].upper()} прокси {proxy_info['host']}:{proxy_info['port']} не работает: {e}")
         return False
 
-print("\n📡 Проверяем прокси 1...")
-proxy1_works = test_proxy(PROXY1)
-
-print("\n📡 Проверяем прокси 2...")
-proxy2_works = test_proxy(PROXY2)
-
-if not proxy1_works and not proxy2_works:
-    print("\n❌ НИ ОДИН ПРОКСИ НЕ РАБОТАЕТ!")
-    print("💡 Нужны новые прокси")
-    exit(1)
-
-WORKING_PROXY_URL = PROXY1 if proxy1_works else PROXY2
-print(f"\n✅ Используем прокси: {WORKING_PROXY_URL[:50]}...")
-
-# Парсим прокси для правильного формата
-from urllib.parse import urlparse
-parsed = urlparse(WORKING_PROXY_URL)
-proxy_host = parsed.hostname
-proxy_port = parsed.port
-proxy_user = parsed.username
-proxy_pass = parsed.password
-
-print(f"📡 Хост: {proxy_host}, Порт: {proxy_port}, Логин: {proxy_user}")
-
-# ==================== ПРОВЕРКА БИРЖ ====================
-print("\n" + "=" * 60)
-print("🏦 ПРОВЕРКА БИРЖ ЧЕРЕЗ ПРОКСИ")
-print("=" * 60)
-
-def test_exchange(name, exchange_class, symbol, params=None):
+def test_exchange(name, exchange_class, symbol, proxy_info, params=None):
     if params is None:
         params = {}
     try:
         ex = exchange_class(params)
         ex.enableRateLimit = True
         
-        # Правильный способ установки SOCKS5 прокси для ccxt
-        ex.proxy = f"socks5://{proxy_host}:{proxy_port}"
-        if proxy_user and proxy_pass:
-            ex.proxy_login = proxy_user
-            ex.proxy_password = proxy_pass
-        ex.proxy_type = 'socks5'
+        if proxy_info['type'] == 'http':
+            ex.http_proxy = f"http://{proxy_info['user']}:{proxy_info['pass']}@{proxy_info['host']}:{proxy_info['port']}"
+            ex.https_proxy = f"http://{proxy_info['user']}:{proxy_info['pass']}@{proxy_info['host']}:{proxy_info['port']}"
+        else:
+            ex.proxy = f"socks5://{proxy_info['host']}:{proxy_info['port']}"
+            ex.proxy_login = proxy_info['user']
+            ex.proxy_password = proxy_info['pass']
+            ex.proxy_type = 'socks5'
         
-        print(f"   Пробуем {name}...")
         ticker = ex.fetch_ticker(symbol)
-        print(f"✅ {name} - РАБОТАЕТ! Цена: ${ticker['last']:.2f}")
-        return True, ex
+        print(f"   ✅ {name} - РАБОТАЕТ! Цена: ${ticker['last']:.2f}")
+        return True
     except Exception as e:
-        print(f"❌ {name} - НЕ РАБОТАЕТ: {str(e)[:100]}")
-        return False, None
+        print(f"   ❌ {name} - {str(e)[:60]}")
+        return False
 
-exchanges = [
-    ("Bybit", ccxt.bybit, "BTCUSDT", {'options': {'defaultType': 'linear'}}),
-    ("KuCoin", ccxt.kucoin, "BTC/USDT", {}),
-    ("Gate.io", ccxt.gateio, "BTC_USDT", {'options': {'defaultType': 'swap'}}),
-]
+# ==================== ТЕСТИРУЕМ КАЖДЫЙ ПРОКСИ ====================
+working_proxy = None
 
-print("\n")
-working_exchanges = []
-selected_exchange = None
-selected_name = None
-
-for name, cls, symbol, params in exchanges:
-    ok, ex = test_exchange(name, cls, symbol, params)
-    if ok:
-        working_exchanges.append(name)
-        if not selected_exchange:
-            selected_exchange = ex
-            selected_name = name
-    time.sleep(1)
-
-# ==================== РЕЗУЛЬТАТ ====================
-print("\n" + "=" * 60)
-print("📊 РЕЗУЛЬТАТЫ ПРОВЕРКИ")
-print("=" * 60)
-
-if working_exchanges:
-    print(f"\n✅ РАБОТАЮТ: {', '.join(working_exchanges)}")
-    print(f"\n🎯 РЕКОМЕНДАЦИЯ: Используйте {working_exchanges[0]}")
-    print("\n🎉 ПРОКСИ И БИРЖА РАБОТАЮТ!")
-    print("💡 МОЖНО ЗАПУСКАТЬ ПОЛНОГО БОТА")
+for proxy_info in PROXIES_LIST:
+    print("\n" + "=" * 60)
+    print(f"📡 ТЕСТИРУЕМ {proxy_info['type'].upper()} ПРОКСИ: {proxy_info['host']}:{proxy_info['port']}")
     print("=" * 60)
+    
+    # Проверяем прокси
+    if not test_proxy(proxy_info):
+        continue
+    
+    # Проверяем биржи
+    exchanges = [
+        ("Bybit", ccxt.bybit, "BTCUSDT", {'options': {'defaultType': 'linear'}}),
+        ("KuCoin", ccxt.kucoin, "BTC/USDT", {}),
+        ("Gate.io", ccxt.gateio, "BTC_USDT", {'options': {'defaultType': 'swap'}}),
+        ("Binance", ccxt.binance, "BTC/USDT", {'options': {'defaultType': 'future'}}),
+    ]
+    
+    working = []
+    for name, cls, symbol, params in exchanges:
+        if test_exchange(name, cls, symbol, proxy_info, params):
+            working.append(name)
+        time.sleep(0.5)
+    
+    if working:
+        print(f"\n✅ С ЭТИМ ПРОКСИ РАБОТАЮТ: {', '.join(working)}")
+        print(f"\n🎉 УСПЕХ! {proxy_info['type'].upper()} прокси {proxy_info['host']}:{proxy_info['port']} ГОДЕН!")
+        working_proxy = proxy_info
+        break
+
+if not working_proxy:
+    print("\n❌ НИ ОДИН ПРОКСИ НЕ РАБОТАЕТ!")
 else:
-    print("\n❌ НИ ОДНА БИРЖА НЕ РАБОТАЕТ!")
-    print("💡 Возможные причины:")
-    print("   1. Прокси не поддерживают SOCKS5 для ccxt")
-    print("   2. Биржи блокируют прокси")
-    print("   3. Нужны HTTP прокси, а не SOCKS5")
-    print("\n❌ БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ БИРЖИ!")
+    print("\n" + "=" * 60)
+    print(f"🏆 РЕКОМЕНДУЕМЫЙ ПРОКСИ: {working_proxy['type'].upper()}://{working_proxy['host']}:{working_proxy['port']}")
+    print("=" * 60)
 
 print("\n" + "=" * 60)
