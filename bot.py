@@ -38,11 +38,11 @@ def get_current_session():
     # Переводим в МСК (UTC+3)
     msk_hour = (now.hour + 3) % 24
     
-    if 10 <= current_hour < 16:
+    if 10 <= msk_hour < 16:
         return 'london'
-    elif 16 <= current_hour < 22:
+    elif 16 <= msk_hour < 22:
         return 'newyork'
-    elif 2 <= current_hour < 10:
+    elif 2 <= msk_hour < 10:
         return 'asia'
     else:
         return 'calm'
