@@ -38,7 +38,7 @@ if not proxy1_works and not proxy2_works:
 WORKING_PROXY = PROXY1 if proxy1_works else PROXY2
 print(f"\n✅ Используем прокси: {WORKING_PROXY[:50]}...")
 
-# ==================== ПРОВЕРКА БИРЖ ====================
+# ==================== ПРОВЕРКА БИРЖ (БЕЗ КОНФЛИКТА) ====================
 print("\n" + "=" * 60)
 print("🏦 ПРОВЕРКА БИРЖ ЧЕРЕЗ ПРОКСИ")
 print("=" * 60)
@@ -47,10 +47,14 @@ def test_exchange(name, exchange_class, symbol, params=None):
     if params is None:
         params = {}
     try:
+        # ВАЖНО: не используем http_proxy/https_proxy отдельно
+        # Вместо этого используем aiohttp_proxy или настраиваем через session
         ex = exchange_class(params)
         ex.enableRateLimit = True
-        ex.http_proxy = WORKING_PROXY
-        ex.https_proxy = WORKING_PROXY
+        
+        # Правильный способ установки прокси для ccxt
+        ex.proxy = WORKING_PROXY
+        ex.proxy_type = 'socks5'  # socks5 или http
         
         ticker = ex.fetch_ticker(symbol)
         print(f"✅ {name} - РАБОТАЕТ! Цена: ${ticker['last']:.2f}")
@@ -96,6 +100,8 @@ if working_exchanges:
             ticker = selected_exchange.fetch_ticker("BTC/USDT")
         elif working_exchanges[0] == "Bybit":
             ticker = selected_exchange.fetch_ticker("BTCUSDT")
+        elif working_exchanges[0] == "KuCoin":
+            ticker = selected_exchange.fetch_ticker("BTC/USDT")
         else:
             ticker = selected_exchange.fetch_ticker("BTC/USDT")
         
