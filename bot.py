@@ -21,46 +21,36 @@ os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
 os.makedirs('data/charts', exist_ok=True)
 
-# ==================== ПРОКСИ (ДВА НА ВЫБОР) ====================
+# ==================== ПРОКСИ (ВАШИ) ====================
 
-PROXY_LIST = [
-    {
-        'host': '155.212.48.112',
-        'port': '63675',
-        'user': 'bqd9tD8A',
-        'pass': 'i6wUJxiU'
-    },
-    {
-        'host': '154.194.89.27',
-        'port': '62841',
-        'user': 'bqd9tD8A',
-        'pass': 'i6wUJxiU'
-    },
-]
+PROXY_HOST1 = "155.212.48.112"
+PROXY_PORT1 = "63675"
+PROXY_USER1 = "bqd9tD8A"
+PROXY_PASS1 = "i6wUJxiU"
 
-def get_working_proxy():
-    """Проверяет какой прокси работает, перебирает по очереди"""
-    for proxy_info in PROXY_LIST:
-        try:
-            proxy = f"http://{proxy_info['user']}:{proxy_info['pass']}@{proxy_info['host']}:{proxy_info['port']}"
-            proxies = {"http": proxy, "https": proxy}
-            r = requests.get("https://api.ipify.org", proxies=proxies, timeout=10)
-            if r.status_code == 200:
-                print(f"✅ Рабочий прокси: {proxy_info['host']}:{proxy_info['port']}")
-                return proxies
-        except Exception as e:
-            print(f"❌ Прокси {proxy_info['host']}:{proxy_info['port']} не работает: {e}")
-            continue
-    
-    print("⚠️ Все прокси не работают, работаем без прокси")
-    return None
+PROXY_HOST2 = "154.194.89.27"
+PROXY_PORT2 = "62841"
+PROXY_USER2 = "bqd9tD8A"
+PROXY_PASS2 = "i6wUJxiU"
 
-PROXIES = get_working_proxy()
+PROXY_HTTP1 = f"http://{PROXY_USER1}:{PROXY_PASS1}@{PROXY_HOST1}:{PROXY_PORT1}"
+PROXY_HTTP2 = f"http://{PROXY_USER2}:{PROXY_PASS2}@{PROXY_HOST2}:{PROXY_PORT2}"
 
-if PROXIES:
-    print(f"🔒 Прокси активен")
-else:
-    print("⚠️ Работаем без прокси")
+# Пробуем прокси
+PROXIES = None
+for proxy in [PROXY_HTTP1, PROXY_HTTP2]:
+    try:
+        proxies = {"http": proxy, "https": proxy}
+        r = requests.get("https://api.ipify.org", proxies=proxies, timeout=10)
+        if r.status_code == 200:
+            print(f"✅ Рабочий прокси: {proxy[:30]}... IP: {r.text}")
+            PROXIES = proxies
+            break
+    except:
+        continue
+
+if not PROXIES:
+    print("⚠️ Прокси не работают, работаем без прокси")
 
 # ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
 
