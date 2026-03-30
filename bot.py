@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 import io
+import socks
+import socket
 
 TELEGRAM_TOKEN = "8645396589:AAHIceq907-38mvWJfa9BRaQWsrzC86ivNU"
 LAST_UPDATE_ID = 0
@@ -21,211 +23,99 @@ os.makedirs('data', exist_ok=True)
 os.makedirs('data/footprint', exist_ok=True)
 os.makedirs('data/charts', exist_ok=True)
 
-# ==================== ПРОКСИ (ВАШИ) ====================
+# ==================== SOCKS5 ПРОКСИ ====================
 
-PROXY_HOST1 = "155.212.48.112"
-PROXY_PORT1 = "63675"
-PROXY_USER1 = "bqd9tD8A"
-PROXY_PASS1 = "i6wUJxiU"
+# Ваши прокси
+PROXY1 = "socks5://bqd9tD8A:i6wUJxiU@155.212.48.112:63675"
+PROXY2 = "socks5://bqd9tD8A:i6wUJxiU@154.194.89.27:62841"
 
-PROXY_HOST2 = "154.194.89.27"
-PROXY_PORT2 = "62841"
-PROXY_USER2 = "bqd9tD8A"
-PROXY_PASS2 = "i6wUJxiU"
-
-PROXY_HTTP1 = f"http://{PROXY_USER1}:{PROXY_PASS1}@{PROXY_HOST1}:{PROXY_PORT1}"
-PROXY_HTTP2 = f"http://{PROXY_USER2}:{PROXY_PASS2}@{PROXY_HOST2}:{PROXY_PORT2}"
-
-# Пробуем прокси
-PROXIES = None
-for proxy in [PROXY_HTTP1, PROXY_HTTP2]:
+def setup_socks_proxy(proxy_url):
+    """Настраивает SOCKS5 прокси для всего приложения"""
     try:
-        proxies = {"http": proxy, "https": proxy}
-        r = requests.get("https://api.ipify.org", proxies=proxies, timeout=10)
-        if r.status_code == 200:
-            print(f"✅ Рабочий прокси: {proxy[:30]}... IP: {r.text}")
-            PROXIES = proxies
-            break
-    except:
-        continue
+        import socks
+        import socket
+        
+        # Парсим прокси
+        if proxy_url.startswith("socks5://"):
+            proxy_url = proxy_url[9:]  # убираем socks5://
+        
+        if "@" in proxy_url:
+            auth, host_port = proxy_url.split("@")
+            user, password = auth.split(":")
+            host, port = host_port.split(":")
+            port = int(port)
+            
+            # Настраиваем SOCKS
+            socks.set_default_proxy(socks.SOCKS5, host, port, username=user, password=password)
+            socket.socket = socks.socksocket
+            print(f"✅ SOCKS5 прокси настроен: {host}:{port}")
+            return True
+    except Exception as e:
+        print(f"❌ Ошибка настройки прокси: {e}")
+        return False
+    return False
 
-if not PROXIES:
-    print("⚠️ Прокси не работают, работаем без прокси")
-
-# ==================== ГЛОБАЛЬНЫЕ НАСТРОЙКИ ====================
-
-GLOBAL_WATCHLIST_FILE = 'data/global_watchlist.json'
-GLOBAL_SETTINGS_FILE = 'data/global_settings.json'
-GLOBAL_TRADES_FILE = 'data/global_trades.json'
-
-def get_global_watchlist():
-    if os.path.exists(GLOBAL_WATCHLIST_FILE):
-        with open(GLOBAL_WATCHLIST_FILE, 'r') as f:
-            data = json.load(f)
-            return data.get('watchlist', ['BTC', 'ETH', 'SOL'])
-    return ['BTC', 'ETH', 'SOL']
-
-def save_global_watchlist(watchlist):
-    with open(GLOBAL_WATCHLIST_FILE, 'w') as f:
-        json.dump({'watchlist': watchlist}, f, indent=2)
-
-def get_global_settings():
-    if os.path.exists(GLOBAL_SETTINGS_FILE):
-        with open(GLOBAL_SETTINGS_FILE, 'r') as f:
-            return json.load(f)
-    return {'style': 'day', 'min_confidence': 70, 'notifications_enabled': True}
-
-def save_global_settings(settings):
-    with open(GLOBAL_SETTINGS_FILE, 'w') as f:
-        json.dump(settings, f, indent=2)
-
-# ==================== УПРАВЛЕНИЕ СДЕЛКАМИ ====================
-
-class GlobalTradeManager:
-    def __init__(self):
-        self.active_trades = {}
-        self.trade_counter = 1
-        self.load_trades()
-    
-    def load_trades(self):
-        if os.path.exists(GLOBAL_TRADES_FILE):
-            with open(GLOBAL_TRADES_FILE, 'r') as f:
-                data = json.load(f)
-                self.active_trades = data.get('active', {})
-                self.trade_counter = data.get('counter', 1)
-    
-    def save_trades(self):
-        with open(GLOBAL_TRADES_FILE, 'w') as f:
-            json.dump({'active': self.active_trades, 'counter': self.trade_counter}, f, indent=2)
-    
-    def get_next_id(self):
-        current = self.trade_counter
-        self.trade_counter += 1
-        self.save_trades()
-        return current
-    
-    def add_trade(self, symbol, side, entry_price, size=1, leverage=1, tp=None, sl=None):
-        trade_id = self.get_next_id()
-        trade = {
-            'id': trade_id, 'symbol': symbol, 'side': side, 'entry': entry_price,
-            'size': size, 'leverage': leverage, 'tp': tp, 'sl': sl,
-            'open_time': datetime.now().isoformat(), 'status': 'open'
-        }
-        self.active_trades[str(trade_id)] = trade
-        self.save_trades()
-        return trade_id
-    
-    def close_trade(self, trade_id, exit_price):
-        trade_id = str(trade_id)
-        if trade_id not in self.active_trades:
-            return None
-        trade = self.active_trades[trade_id]
-        if trade['side'] == 'LONG':
-            pnl_pct = (exit_price - trade['entry']) / trade['entry'] * 100 * trade['leverage']
-            pnl_usdt = trade['size'] * (exit_price - trade['entry']) / trade['entry'] * trade['leverage']
-        else:
-            pnl_pct = (trade['entry'] - exit_price) / trade['entry'] * 100 * trade['leverage']
-            pnl_usdt = trade['size'] * (trade['entry'] - exit_price) / trade['entry'] * trade['leverage']
-        trade['exit'] = exit_price
-        trade['exit_time'] = datetime.now().isoformat()
-        trade['pnl_pct'] = round(pnl_pct, 2)
-        trade['pnl_usdt'] = round(pnl_usdt, 2)
-        trade['status'] = 'closed'
-        history_file = 'data/trades_history.json'
-        history = []
-        if os.path.exists(history_file):
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-        history.append(trade)
-        with open(history_file, 'w') as f:
-            json.dump(history, f, indent=2)
-        del self.active_trades[trade_id]
-        self.save_trades()
-        return trade
-    
-    def reset_all_trades(self):
-        self.active_trades = {}
-        self.trade_counter = 1
-        self.save_trades()
-        if os.path.exists('data/trades_history.json'):
-            os.remove('data/trades_history.json')
-        return True
-    
-    def get_active_trades(self):
-        return self.active_trades
-    
-    def get_history(self, limit=20):
-        history_file = 'data/trades_history.json'
-        if os.path.exists(history_file):
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-            return history[-limit:]
-        return []
-    
-    def get_stats(self):
-        history = self.get_history(1000)
-        if not history:
-            return {'total_trades': 0, 'wins': 0, 'losses': 0, 'win_rate': 0, 'total_pnl_pct': 0, 'total_pnl_usdt': 0, 'profit_factor': 0}
-        wins = [t for t in history if t['pnl_pct'] > 0]
-        losses = [t for t in history if t['pnl_pct'] <= 0]
-        total_pnl_pct = sum(t['pnl_pct'] for t in history)
-        total_pnl_usdt = sum(t['pnl_usdt'] for t in history)
-        profit_factor = abs(sum(t['pnl_usdt'] for t in wins) / sum(t['pnl_usdt'] for t in losses)) if losses and sum(t['pnl_usdt'] for t in losses) != 0 else 0
-        return {
-            'total_trades': len(history), 'wins': len(wins), 'losses': len(losses),
-            'win_rate': round(len(wins) / len(history) * 100, 2) if history else 0,
-            'total_pnl_pct': round(total_pnl_pct, 2), 'total_pnl_usdt': round(total_pnl_usdt, 2),
-            'profit_factor': round(profit_factor, 2)
-        }
-
-trade_manager = GlobalTradeManager()
-
-# ==================== ФУНКЦИЯ ФОРМАТИРОВАНИЯ ЦЕНЫ ====================
-
-def format_price(price):
-    if price is None:
-        return "0"
-    if price < 0.00001:
-        return f"{price:.8f}".rstrip('0').rstrip('.')
-    elif price < 0.001:
-        return f"{price:.6f}".rstrip('0').rstrip('.')
-    elif price < 1:
-        return f"{price:.4f}".rstrip('0').rstrip('.')
-    elif price < 1000:
-        return f"{price:.2f}"
+# Пробуем первый прокси
+print("🔧 Настройка SOCKS5 прокси...")
+if setup_socks_proxy(PROXY1):
+    PROXIES = {"http": "socks5://", "https": "socks5://"}
+    print("✅ Прокси 1 активен")
+else:
+    print("⚠️ Прокси 1 не работает, пробуем второй...")
+    if setup_socks_proxy(PROXY2):
+        PROXIES = {"http": "socks5://", "https": "socks5://"}
+        print("✅ Прокси 2 активен")
     else:
-        return f"{price:.0f}"
+        PROXIES = None
+        print("❌ Прокси не работают, работаем напрямую")
 
-# ==================== ПОДКЛЮЧЕНИЕ К БИРЖЕ С ПРОКСИ ====================
+# ==================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ====================
 
-def create_exchange_with_proxy(exchange_class, params):
+def create_exchange(exchange_class, params):
+    """Создает биржу с поддержкой SOCKS5"""
     try:
         exchange = exchange_class(params)
         exchange.enableRateLimit = True
+        
+        # Если используем прокси, настраиваем
         if PROXIES:
-            exchange.http_proxy = PROXIES.get('http')
-            exchange.https_proxy = PROXIES.get('https')
+            # Для ccxt через прокси
+            exchange.http_proxy = "socks5://"
+            exchange.https_proxy = "socks5://"
+        
         return exchange
-    except:
+    except Exception as e:
+        print(f"Ошибка: {e}")
         return None
 
 exchange = None
 exchange_name = None
 
-# Пробуем подключиться к биржам через прокси
-for name, cls, params in [
+# Список бирж в порядке приоритета (Binance на первом месте)
+exchanges_list = [
+    ('Binance', ccxt.binance, {'options': {'defaultType': 'future'}}),
     ('Bybit', ccxt.bybit, {'options': {'defaultType': 'linear'}}),
     ('KuCoin', ccxt.kucoin, {}),
     ('Gate.io', ccxt.gateio, {'options': {'defaultType': 'swap'}}),
-]:
-    ex = create_exchange_with_proxy(cls, params)
+]
+
+for name, cls, params in exchanges_list:
+    print(f"🔌 Пробуем подключиться к {name}...")
+    ex = create_exchange(cls, params)
     if ex:
         try:
-            ticker = ex.fetch_ticker('BTCUSDT')
-            exchange = ex
-            exchange_name = name
-            print(f"✅ {name} подключена через прокси")
-            break
+            # Пробуем разные форматы символов
+            for sym in ['BTC/USDT', 'BTCUSDT']:
+                try:
+                    ticker = ex.fetch_ticker(sym)
+                    exchange = ex
+                    exchange_name = name
+                    print(f"✅ {name} подключена! Цена BTC: ${ticker['last']:.2f}")
+                    break
+                except:
+                    continue
+            if exchange:
+                break
         except Exception as e:
             print(f"❌ {name} ошибка: {e}")
             continue
@@ -233,7 +123,7 @@ for name, cls, params in [
 if not exchange:
     print("⚠️ Работаем в тестовом режиме")
 
-# ==================== SMC/ICT АНАЛИЗ (Smart Money Concepts) ====================
+# ==================== SMC/ICT АНАЛИЗ ====================
 
 def calculate_indicators(df):
     """Расчет всех индикаторов для SMC анализа"""
@@ -278,11 +168,7 @@ def calculate_indicators(df):
     return df
 
 def find_order_blocks(df):
-    """
-    SMC: Поиск Order Blocks (зоны крупных игроков)
-    Бычий OB — последняя медвежья свеча перед сильным ростом
-    Медвежий OB — последняя бычья свеча перед сильным падением
-    """
+    """SMC: Поиск Order Blocks"""
     df['bullish_ob'] = 0
     df['bearish_ob'] = 0
     df['ob_high'] = np.nan
@@ -313,7 +199,7 @@ def find_order_blocks(df):
     return df
 
 def calculate_volume_profile(df, bars=50):
-    """Volume Profile: находит POC (Point of Control) — цена с макс объемом"""
+    """Volume Profile: POC (Point of Control)"""
     recent = df.tail(bars)
     price_min = recent['low'].min()
     price_max = recent['high'].max()
@@ -331,15 +217,11 @@ def calculate_volume_profile(df, bars=50):
     return poc['price'] if poc else None
 
 def generate_signal(df, style='day', min_confidence=70):
-    """
-    Генерация SMC сигнала с системой баллов
-    Учитывает: Order Blocks, RSI, MACD, Bollinger, Stochastic, объем
-    """
+    """Генерация SMC сигнала с системой баллов"""
     if df is None or len(df) < 50:
         return None
     current = df.iloc[-1]
     
-    # Параметры для разных стилей торговли
     params = {
         'scalp': {'sl_pct': 0.008, 'tp_pct': 0.015, 'min_conf': 65},
         'day': {'sl_pct': 0.015, 'tp_pct': 0.03, 'min_conf': 70},
@@ -351,7 +233,7 @@ def generate_signal(df, style='day', min_confidence=70):
     signal_type = None
     reasons = []
     
-    # 1. SMC: Order Blocks (20 баллов)
+    # SMC: Order Blocks (20 баллов)
     if current['bullish_ob'] == 1:
         score += 20
         signal_type = 'LONG'
@@ -361,7 +243,7 @@ def generate_signal(df, style='day', min_confidence=70):
         signal_type = 'SHORT'
         reasons.append(f"🔴 Медвежий OB: {format_price(current['ob_low'])}-{format_price(current['ob_high'])}")
     
-    # 2. RSI (15 баллов)
+    # RSI (15 баллов)
     if current['rsi'] < 30:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -371,7 +253,7 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 RSI: {current['rsi']:.1f} (перекупленность)")
     
-    # 3. MACD (15 баллов)
+    # MACD (15 баллов)
     if current['macd_hist'] > 0 and signal_type == 'LONG':
         score += 15
         reasons.append(f"📈 MACD: +{current['macd_hist']:.4f}")
@@ -379,7 +261,7 @@ def generate_signal(df, style='day', min_confidence=70):
         score += 15
         reasons.append(f"📉 MACD: {current['macd_hist']:.4f}")
     
-    # 4. Bollinger Bands (15 баллов)
+    # Bollinger (15 баллов)
     if current['close'] <= current['bb_lower'] * 1.005:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -389,7 +271,7 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 Bollinger: у верхней полосы {format_price(current['bb_upper'])}")
     
-    # 5. Stochastic (15 баллов)
+    # Stochastic (15 баллов)
     if current['stoch_k'] < 20:
         score += 15
         if not signal_type: signal_type = 'LONG'
@@ -399,7 +281,7 @@ def generate_signal(df, style='day', min_confidence=70):
         if not signal_type: signal_type = 'SHORT'
         reasons.append(f"📊 Stochastic: %K={current['stoch_k']:.1f}")
     
-    # 6. Объем (10 баллов)
+    # Объем (10 баллов)
     if current['volume_ratio'] > 1.5:
         score += 10
         reasons.append(f"⚡ Объем: {current['volume_ratio']:.1f}x")
@@ -426,8 +308,18 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
     if not exchange:
         return None
     try:
-        sym = f"{symbol}USDT"
-        ohlcv = exchange.fetch_ohlcv(sym, '1h', 150)
+        # Пробуем разные форматы символа
+        for sym in [f"{symbol}USDT", f"{symbol}/USDT"]:
+            try:
+                ohlcv = exchange.fetch_ohlcv(sym, '1h', 150)
+                if ohlcv:
+                    break
+            except:
+                continue
+        
+        if not ohlcv:
+            return None
+            
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = calculate_indicators(df)
@@ -440,137 +332,15 @@ def get_full_analysis(symbol, style='day', min_confidence=70):
             'exchange': exchange_name, 'df': df
         }
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error for {symbol}: {e}")
         return None
-
-# ==================== ГРАФИК С УРОВНЯМИ SMC ====================
-
-def generate_smc_chart(symbol, df, analysis, signal, style='day'):
-    """Генерирует график с уровнями SMC: Order Blocks, FVG, POC"""
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
-    df_plot = df.tail(100)
-    dates = df_plot['timestamp']
-    
-    # Рисуем свечи
-    for i, row in df_plot.iterrows():
-        color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
-        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=0.8)
-        ax1.add_patch(Rectangle((row['timestamp'] - pd.Timedelta(minutes=30), row['open']), pd.Timedelta(minutes=60), row['close'] - row['open'], facecolor=color, alpha=0.7, linewidth=0))
-    
-    # Order Blocks (зеленые/красные зоны)
-    if 'bullish_ob' in df.columns:
-        for i in range(len(df_plot)):
-            if df_plot['bullish_ob'].iloc[i] == 1:
-                ob_high = df_plot['ob_high'].iloc[i]
-                ob_low = df_plot['ob_low'].iloc[i]
-                if ob_high and ob_low and not np.isnan(ob_high):
-                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='green')
-    
-    if 'bearish_ob' in df.columns:
-        for i in range(len(df_plot)):
-            if df_plot['bearish_ob'].iloc[i] == 1:
-                ob_high = df_plot['ob_high'].iloc[i]
-                ob_low = df_plot['ob_low'].iloc[i]
-                if ob_high and ob_low and not np.isnan(ob_high):
-                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='red')
-    
-    # POC
-    if analysis and analysis.get('poc'):
-        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', linewidth=1.5, alpha=0.7, label=f'POC: {format_price(analysis["poc"])}')
-    
-    # Уровни поддержки/сопротивления
-    if analysis:
-        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
-        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
-    
-    # Уровни входа/выхода
-    if signal:
-        entry = signal['entry']
-        sl = signal['sl']
-        tp = signal['tp']
-        color = 'green' if signal['signal'] == 'LONG' else 'red'
-        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, label=f'Entry: {format_price(entry)}')
-        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, label=f'SL: {format_price(sl)}')
-        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, label=f'TP: {format_price(tp)}')
-        last_date = df_plot['timestamp'].iloc[-1]
-        ax1.annotate('ВХОД', xy=(last_date, entry), xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)), arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
-    
-    # Объем
-    colors = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df_plot['close'], df_plot['open'])]
-    ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
-    ax2.set_ylabel('Volume', color='white')
-    ax2.grid(True, alpha=0.2)
-    
-    # Оформление
-    ax1.set_title(f'{symbol} | {style.upper()} | SMC Analysis', fontsize=14, fontweight='bold', color='white')
-    ax1.set_ylabel('Price (USDT)', color='white')
-    ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
-    ax1.grid(True, alpha=0.2)
-    ax1.set_facecolor('#0a0a0a')
-    ax2.set_facecolor('#0a0a0a')
-    fig.patch.set_facecolor('#0a0a0a')
-    
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
-    buf.seek(0)
-    plt.close()
-    return buf
-
-# ==================== АНАЛИЗ СТАКАНА L2 ====================
-
-class OrderBookAnalyzer:
-    def __init__(self):
-        self.exchange = None
-    
-    def set_exchange(self, ex):
-        self.exchange = ex
-    
-    def get_orderbook(self, symbol):
-        try:
-            return self.exchange.fetch_order_book(symbol, limit=20)
-        except:
-            return None
-    
-    def analyze_liquidity_walls(self, orderbook):
-        """Анализирует стены ликвидности в стакане"""
-        if not orderbook:
-            return None
-        bid_walls = []
-        for bid in orderbook['bids'][:10]:
-            price, quantity = bid
-            value = price * quantity
-            if value > 500_000:
-                bid_walls.append({'price': price, 'quantity': quantity, 'value_usdt': value, 'type': 'BID'})
-        ask_walls = []
-        for ask in orderbook['asks'][:10]:
-            price, quantity = ask
-            value = price * quantity
-            if value > 500_000:
-                ask_walls.append({'price': price, 'quantity': quantity, 'value_usdt': value, 'type': 'ASK'})
-        all_walls = bid_walls + ask_walls
-        biggest_wall = max(all_walls, key=lambda x: x['value_usdt']) if all_walls else None
-        total_bid_value = sum(w['value_usdt'] for w in bid_walls)
-        total_ask_value = sum(w['value_usdt'] for w in ask_walls)
-        return {
-            'bid_walls': bid_walls[:5], 'ask_walls': ask_walls[:5], 'biggest_wall': biggest_wall,
-            'total_bid_value': total_bid_value, 'total_ask_value': total_ask_value,
-            'balance': total_bid_value - total_ask_value,
-            'dominant': 'BUYERS' if total_bid_value > total_ask_value else 'SELLERS'
-        }
-
-orderbook_analyzer = OrderBookAnalyzer()
-orderbook_analyzer.set_exchange(exchange)
 
 # ==================== TELEGRAM БОТ ====================
 
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10, proxies=PROXIES)
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except:
         pass
 
@@ -579,7 +349,7 @@ def send_photo(chat_id, photo_buf, caption=""):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         files = {'photo': ('chart.png', photo_buf, 'image/png')}
         data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
-        requests.post(url, files=files, data=data, timeout=10, proxies=PROXIES)
+        requests.post(url, files=files, data=data, timeout=10)
     except:
         pass
 
@@ -628,7 +398,7 @@ def handle_message(chat_id, text):
 
 📊 *Статус:* {status}
 🏦 *Биржа:* {exchange_name if exchange else 'Тестовый режим'}
-🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}
+🔒 *Прокси:* {'✅ SOCKS5' if PROXIES else '❌ ВЫКЛЮЧЕН'}
 🌍 *Режим:* Глобальный (все видят одно)
 
 📊 *SMC/ICT МЕТОДОЛОГИЯ:*
@@ -769,49 +539,10 @@ def handle_message(chat_id, text):
         else:
             send_message(chat_id, f"❌ Не удалось создать график для {symbol}")
     
-    elif text.startswith("/orderbook"):
-        parts = text.split()
-        if len(parts) < 2:
-            send_message(chat_id, "📝 *Пример:* `/orderbook BTC`")
-            return
-        symbol = parts[1].upper()
-        send_message(chat_id, f"📚 *Анализ стакана для {symbol}...*")
-        if exchange:
-            try:
-                sym = f"{symbol}USDT"
-                orderbook = exchange.fetch_order_book(sym, limit=20)
-                if orderbook:
-                    analysis = orderbook_analyzer.analyze_liquidity_walls(orderbook)
-                    msg = f"""📚 *СТАКАН L2 | {symbol}* — стены ликвидности
-
-🏦 *Биржа:* {exchange_name}
-
-🟢 *КРУПНЫЕ ЗАЯВКИ НА ПОКУПКУ:*\n"""
-                    for wall in analysis['bid_walls'][:3]:
-                        msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
-                    if not analysis['bid_walls']:
-                        msg += "  • Нет крупных стен\n"
-                    msg += f"\n🔴 *КРУПНЫЕ ЗАЯВКИ НА ПРОДАЖУ:*\n"""
-                    for wall in analysis['ask_walls'][:3]:
-                        msg += f"  • ${format_price(wall['price'])} | {wall['quantity']:.0f} | ${wall['value_usdt']/1000:.0f}K\n"
-                    if not analysis['ask_walls']:
-                        msg += "  • Нет крупных стен\n"
-                    msg += f"\n📊 *ИТОГО:*\n  • Объем покупок: ${analysis['total_bid_value']/1000:.0f}K\n  • Объем продаж: ${analysis['total_ask_value']/1000:.0f}K\n  • Баланс: {'+' if analysis['balance'] > 0 else ''}{analysis['balance']/1000:.0f}K\n  • Доминируют: {analysis['dominant']}\n"
-                    if analysis['biggest_wall']:
-                        wall = analysis['biggest_wall']
-                        msg += f"\n🔥 *САМАЯ КРУПНАЯ СТЕНА:*\n  • Тип: {'ПОКУПКА' if wall['type'] == 'BID' else 'ПРОДАЖА'}\n  • Цена: ${format_price(wall['price'])}\n  • Объем: ${wall['value_usdt']/1000:.0f}K\n"
-                    send_message(chat_id, msg)
-                else:
-                    send_message(chat_id, f"❌ Не удалось получить стакан для {symbol}")
-            except Exception as e:
-                send_message(chat_id, f"❌ Ошибка: {e}")
-        else:
-            send_message(chat_id, f"❌ Биржа недоступна, работаем в тестовом режиме")
-    
     elif text == "/aggregate":
         parts = text.split()
         symbol = parts[1].upper() if len(parts) > 1 else 'BTC'
-        send_message(chat_id, f"📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {symbol}*\n\n🏦 *Биржи:* Bybit, KuCoin, Gate.io\n🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\n📡 Данные агрегируются...\n\n💡 Рекомендуется использовать /signals для получения SMC сигналов")
+        send_message(chat_id, f"📊 *АГРЕГИРОВАННЫЕ ДАННЫЕ | {symbol}*\n\n🏦 *Биржи:* Binance, Bybit, KuCoin, Gate.io\n🔒 *Прокси:* {'✅ SOCKS5' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\n📡 Данные агрегируются...\n\n💡 Рекомендуется использовать /signals для получения SMC сигналов")
     
     elif text.startswith("/analyze"):
         parts = text.split()
@@ -888,8 +619,13 @@ def handle_message(chat_id, text):
             if not exit_price:
                 if exchange:
                     try:
-                        ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
-                        exit_price = ticker['last']
+                        for sym in [f"{trade['symbol']}USDT", f"{trade['symbol']}/USDT"]:
+                            try:
+                                ticker = exchange.fetch_ticker(sym)
+                                exit_price = ticker['last']
+                                break
+                            except:
+                                continue
                     except:
                         exit_price = trade['entry'] * (1.02 if trade['side'] == 'LONG' else 0.98)
                 else:
@@ -913,8 +649,13 @@ def handle_message(chat_id, text):
             current_price = trade['entry']
             if exchange:
                 try:
-                    ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
-                    current_price = ticker['last']
+                    for sym in [f"{trade['symbol']}USDT", f"{trade['symbol']}/USDT"]:
+                        try:
+                            ticker = exchange.fetch_ticker(sym)
+                            current_price = ticker['last']
+                            break
+                        except:
+                            continue
                 except:
                     pass
             if trade['side'] == 'LONG':
@@ -966,8 +707,13 @@ def handle_message(chat_id, text):
             current_price = trade['entry']
             if exchange:
                 try:
-                    ticker = exchange.fetch_ticker(f"{trade['symbol']}USDT")
-                    current_price = ticker['last']
+                    for sym in [f"{trade['symbol']}USDT", f"{trade['symbol']}/USDT"]:
+                        try:
+                            ticker = exchange.fetch_ticker(sym)
+                            current_price = ticker['last']
+                            break
+                        except:
+                            continue
                 except:
                     pass
             if trade['side'] == 'LONG':
@@ -1028,7 +774,7 @@ def handle_message(chat_id, text):
         send_message(chat_id, "🔕 *Уведомления ВЫКЛЮЧЕНЫ*")
     
     elif text == "/exchange":
-        send_message(chat_id, f"🏦 *Текущая биржа:* {exchange_name if exchange else 'Тестовый режим'}\n🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\nДоступные: Bybit, KuCoin, Gate.io")
+        send_message(chat_id, f"🏦 *Текущая биржа:* {exchange_name if exchange else 'Тестовый режим'}\n🔒 *Прокси:* {'✅ SOCKS5' if PROXIES else '❌ ВЫКЛЮЧЕН'}\n\nДоступные: Binance, Bybit, KuCoin, Gate.io")
     
     elif text == "/status":
         btc = get_full_analysis('BTC', 'day')
@@ -1037,7 +783,7 @@ def handle_message(chat_id, text):
             msg = f"""✅ *СТАТУС БОТА* (Глобальный)
 
 🏦 *Биржа:* {exchange_name if exchange else 'Тестовый режим'}
-🔒 *Прокси:* {'✅ ВКЛЮЧЕН' if PROXIES else '❌ ВЫКЛЮЧЕН'}
+🔒 *Прокси:* {'✅ SOCKS5' if PROXIES else '❌ ВЫКЛЮЧЕН'}
 🎯 *SMC Стиль:* {settings['style'].upper()}
 📊 *Мин. уверенность:* {settings['min_confidence']}%
 📋 *Монет:* {len(watchlist)}
@@ -1099,18 +845,86 @@ def handle_message(chat_id, text):
     else:
         send_message(chat_id, f"⚠️ Неизвестно: {text}\n/help")
 
+# ==================== ГРАФИК ====================
+
+def generate_smc_chart(symbol, df, analysis, signal, style='day'):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+    df_plot = df.tail(100)
+    dates = df_plot['timestamp']
+    
+    for i, row in df_plot.iterrows():
+        color = '#00ff88' if row['close'] >= row['open'] else '#ff4444'
+        ax1.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color, linewidth=0.8)
+        ax1.add_patch(Rectangle((row['timestamp'] - pd.Timedelta(minutes=30), row['open']), pd.Timedelta(minutes=60), row['close'] - row['open'], facecolor=color, alpha=0.7, linewidth=0))
+    
+    if 'bullish_ob' in df.columns:
+        for i in range(len(df_plot)):
+            if df_plot['bullish_ob'].iloc[i] == 1:
+                ob_high = df_plot['ob_high'].iloc[i]
+                ob_low = df_plot['ob_low'].iloc[i]
+                if ob_high and ob_low and not np.isnan(ob_high):
+                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='green')
+    
+    if 'bearish_ob' in df.columns:
+        for i in range(len(df_plot)):
+            if df_plot['bearish_ob'].iloc[i] == 1:
+                ob_high = df_plot['ob_high'].iloc[i]
+                ob_low = df_plot['ob_low'].iloc[i]
+                if ob_high and ob_low and not np.isnan(ob_high):
+                    ax1.axhspan(ob_low, ob_high, alpha=0.2, color='red')
+    
+    if analysis and analysis.get('poc'):
+        ax1.axhline(y=analysis['poc'], color='yellow', linestyle='--', linewidth=1.5, alpha=0.7, label=f'POC: {format_price(analysis["poc"])}')
+    if analysis:
+        ax1.axhline(y=analysis['support'], color='cyan', linestyle='--', linewidth=1, alpha=0.5, label=f'Support: {format_price(analysis["support"])}')
+        ax1.axhline(y=analysis['resistance'], color='orange', linestyle='--', linewidth=1, alpha=0.5, label=f'Resistance: {format_price(analysis["resistance"])}')
+    
+    if signal:
+        entry = signal['entry']
+        sl = signal['sl']
+        tp = signal['tp']
+        color = 'green' if signal['signal'] == 'LONG' else 'red'
+        ax1.axhline(y=entry, color=color, linestyle='-', linewidth=2, label=f'Entry: {format_price(entry)}')
+        ax1.axhline(y=sl, color='red', linestyle='--', linewidth=1.5, label=f'SL: {format_price(sl)}')
+        ax1.axhline(y=tp, color='lime', linestyle='--', linewidth=1.5, label=f'TP: {format_price(tp)}')
+        last_date = df_plot['timestamp'].iloc[-1]
+        ax1.annotate('ВХОД', xy=(last_date, entry), xytext=(last_date, entry * (1.02 if signal['signal'] == 'LONG' else 0.98)), arrowprops=dict(arrowstyle='->', color=color, lw=2), fontsize=10, fontweight='bold', color=color)
+    
+    colors = ['#00ff88' if close >= open else '#ff4444' for close, open in zip(df_plot['close'], df_plot['open'])]
+    ax2.bar(dates, df_plot['volume'], color=colors, alpha=0.7, width=0.8)
+    ax2.set_ylabel('Volume', color='white')
+    ax2.grid(True, alpha=0.2)
+    
+    ax1.set_title(f'{symbol} | {style.upper()} | SMC Analysis', fontsize=14, fontweight='bold', color='white')
+    ax1.set_ylabel('Price (USDT)', color='white')
+    ax1.legend(loc='upper left', fontsize=8, facecolor='#1a1a2e')
+    ax1.grid(True, alpha=0.2)
+    ax1.set_facecolor('#0a0a0a')
+    ax2.set_facecolor('#0a0a0a')
+    fig.patch.set_facecolor('#0a0a0a')
+    
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0a0a0a')
+    buf.seek(0)
+    plt.close()
+    return buf
+
 # ==================== ЗАПУСК ====================
 
 print("=" * 60)
 print("🚀 SMC FULL BOT — SMC/ICT СТРАТЕГИЯ")
 print("=" * 60)
-print(f"🔒 Прокси: {'✅ ВКЛЮЧЕН (2 шт)' if PROXIES else '❌ ВЫКЛЮЧЕН'}")
+print(f"🔒 Прокси: {'✅ SOCKS5' if PROXIES else '❌ ВЫКЛЮЧЕН'}")
 print(f"🏦 Биржа: {exchange_name if exchange else 'Тестовый режим'}")
 print("🌍 Режим: ГЛОБАЛЬНЫЙ — все пользователи видят одни и те же монеты")
 print("📊 SMC/ICT Анализ: Order Blocks, FVG, Volume Profile, POC")
 print("📈 Индикаторы: RSI, MACD, Bollinger, Stochastic, VWAP, EMA")
 print("🎯 Стили: SCALP (0.8%/1.5%), DAY (1.5%/3%), SWING (2.5%/6%)")
-print("📊 Команды: /all_signals, /chart BTC, /orderbook BTC, /aggregate BTC")
+print("📊 Команды: /all_signals, /chart BTC, /aggregate BTC")
 print("📈 Статистика: /stats, /trades, /pnl")
 print("🗑️ Сброс сделок: /reset_trades")
 print("=" * 60)
@@ -1119,7 +933,7 @@ print("Ожидание сообщений...\n")
 while True:
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        response = requests.get(url, params={"offset": LAST_UPDATE_ID + 1, "timeout": 30}, proxies=PROXIES)
+        response = requests.get(url, params={"offset": LAST_UPDATE_ID + 1, "timeout": 30})
         data = response.json()
         if data.get("ok"):
             for update in data.get("result", []):
