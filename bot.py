@@ -344,7 +344,7 @@ def handle_message(chat_id, text):
     
     elif text == "/all_signals":
         settings['style'] = 'day'
-        await handle_message(chat_id, "/signals")
+        handle_message(chat_id, "/signals")  # Без await!
     
     elif text.startswith("/chart"):
         parts = text.split()
