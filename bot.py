@@ -656,70 +656,68 @@ def handle_message(chat_id, text):
                 msg += f"• {s}\n"
             send_message(chat_id, msg)
     
-    elif text == "/signals":
-    if not watchlist:
-        send_message(chat_id, "📭 Нет монет в списке")
-        return
-    send_message(chat_id, f"🔍 *Поиск сигналов...*\n🏦 {aggregator.exchanges[0]['name']}+")
-    msg = f"🚨 *СИГНАЛЫ* ({settings['style'].upper()})\n\n"
-    for sym in watchlist:  # ← убрали [:5]
-        analysis = get_full_analysis(sym, settings['style'], settings['min_confidence'])
-        msg += format_signal(sym, analysis, settings['style']) + "\n\n"
-        # Добавляем задержку, чтобы не превысить лимит сообщения
-        if len(msg) > 3500:
+      elif text == "/signals":
+        if not watchlist:
+            send_message(chat_id, "📭 Нет монет в списке")
+            return
+        send_message(chat_id, f"🔍 *Поиск сигналов...*\n🏦 {aggregator.exchanges[0]['name'] if aggregator.exchanges else 'KuCoin'}+")
+        msg = f"🚨 *СИГНАЛЫ* ({settings['style'].upper()})\n\n"
+        for sym in watchlist:
+            analysis = get_full_analysis(sym, settings['style'], settings['min_confidence'])
+            msg += format_signal(sym, analysis, settings['style']) + "\n\n"
+            if len(msg) > 3500:
+                send_message(chat_id, msg[:4000])
+                msg = ""
+        if msg:
             send_message(chat_id, msg[:4000])
-            msg = ""
-    if msg:
-        send_message(chat_id, msg[:4000])
     
     elif text == "/all_signals":
-    if not watchlist:
-        send_message(chat_id, "📭 Нет монет в списке")
-        return
-    send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 {aggregator.exchanges[0]['name']}+")
-    msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
-    for sym in watchlist:  # ← убрали [:5]
-        msg += f"📊 *{sym}*\n"
+        if not watchlist:
+            send_message(chat_id, "📭 Нет монет в списке")
+            return
+        send_message(chat_id, f"🔍 *Поиск сигналов по всем стилям...*\n🏦 {aggregator.exchanges[0]['name'] if aggregator.exchanges else 'KuCoin'}+")
+        msg = "🚨 *СИГНАЛЫ ПО ВСЕМ СТИЛЯМ*\n\n"
+        for sym in watchlist:
+            msg += f"📊 *{sym}*\n"
+            
+            analysis_scalp = get_full_analysis(sym, 'scalp', 65)
+            if analysis_scalp and analysis_scalp['signal']:
+                s = analysis_scalp['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *SCALP* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_scalp['price'] if analysis_scalp else '?'
+                msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            analysis_day = get_full_analysis(sym, 'day', 70)
+            if analysis_day and analysis_day['signal']:
+                s = analysis_day['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *DAY* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_day['price'] if analysis_day else '?'
+                msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            analysis_swing = get_full_analysis(sym, 'swing', 75)
+            if analysis_swing and analysis_swing['signal']:
+                s = analysis_swing['signal']
+                emoji = "📈" if s['signal'] == 'LONG' else "📉"
+                msg += f"  {emoji} *SWING* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
+                msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
+            else:
+                price = analysis_swing['price'] if analysis_swing else '?'
+                msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
+            
+            msg += "\n"
+            
+            if len(msg) > 3500:
+                send_message(chat_id, msg[:4000])
+                msg = ""
         
-        analysis_scalp = get_full_analysis(sym, 'scalp', 65)
-        if analysis_scalp and analysis_scalp['signal']:
-            s = analysis_scalp['signal']
-            emoji = "📈" if s['signal'] == 'LONG' else "📉"
-            msg += f"  {emoji} *SCALP* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
-            msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
-        else:
-            price = analysis_scalp['price'] if analysis_scalp else '?'
-            msg += f"  ⏳ *SCALP* | нет сигнала | Цена: {format_price(price)}\n"
-        
-        analysis_day = get_full_analysis(sym, 'day', 70)
-        if analysis_day and analysis_day['signal']:
-            s = analysis_day['signal']
-            emoji = "📈" if s['signal'] == 'LONG' else "📉"
-            msg += f"  {emoji} *DAY* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
-            msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
-        else:
-            price = analysis_day['price'] if analysis_day else '?'
-            msg += f"  ⏳ *DAY* | нет сигнала | Цена: {format_price(price)}\n"
-        
-        analysis_swing = get_full_analysis(sym, 'swing', 75)
-        if analysis_swing and analysis_swing['signal']:
-            s = analysis_swing['signal']
-            emoji = "📈" if s['signal'] == 'LONG' else "📉"
-            msg += f"  {emoji} *SWING* {s['signal']} | Увер: {s['confidence']}% | RR 1:{s['rr']}\n"
-            msg += f"     🚪 {format_price(s['entry'])} | 🛑 {format_price(s['sl'])} | 🎯 {format_price(s['tp'])}\n"
-        else:
-            price = analysis_swing['price'] if analysis_swing else '?'
-            msg += f"  ⏳ *SWING* | нет сигнала | Цена: {format_price(price)}\n"
-        
-        msg += "\n"
-        
-        # Отправляем каждые 5 монет, чтобы не превысить лимит
-        if len(msg) > 3500:
+        if msg:
             send_message(chat_id, msg[:4000])
-            msg = ""
-    
-    if msg:
-        send_message(chat_id, msg[:4000])
     
     # ==================== УПРАВЛЕНИЕ СДЕЛКАМИ ====================
     
